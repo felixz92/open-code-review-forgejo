@@ -34,6 +34,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          go build -trimpath -ldflags="-s -w" -o "bin/ocr-forgejo-${{ runner.os }}-amd64" ./cmd/ocr-forgejo
-          gh release create "${GITHUB_REF_NAME}" "bin/ocr-forgejo-${{ runner.os }}-amd64" \
+          for platform in linux/amd64 linux/arm64 darwin/arm64; do
+            os="${platform%/*}"; arch="${platform#*/}"
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags="-s -w" \
+              -o "bin/ocr-forgejo-$os-$arch" ./cmd/ocr-forgejo
+          done
+          gh release create "${GITHUB_REF_NAME}" \
+            "bin/ocr-forgejo-linux-amd64" \
+            "bin/ocr-forgejo-linux-arm64" \
+            "bin/ocr-forgejo-darwin-arm64" \
             --title "${GITHUB_REF_NAME}" --generate-notes
