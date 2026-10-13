@@ -20,6 +20,7 @@ type fakePoster struct {
 	reviewComments map[int64][]poster.ReviewCommentInfo
 	issueComments  []poster.IssueCommentInfo
 	diff           []byte
+	getDiffErr     error
 	headSHA        string
 	createErr      error
 
@@ -74,7 +75,7 @@ func (f *fakePoster) EditIssueComment(commentID int64, body string) error {
 	f.editedSummary[commentID] = body
 	return nil
 }
-func (f *fakePoster) GetDiff() ([]byte, error) { return f.diff, nil }
+func (f *fakePoster) GetDiff() ([]byte, error) { return f.diff, f.getDiffErr }
 func (f *fakePoster) GetPullRequest() (*poster.PullRequestInfo, error) {
 	return &poster.PullRequestInfo{HeadSHA: f.headSHA}, nil
 }
@@ -314,5 +315,110 @@ func TestSpanFromHistoryIgnoresContentWording(t *testing.T) {
 	span := spanFromHistory(poster.ReviewCommentInfo{Body: body, Path: "a.go"})
 	if span.Start != 3 || span.End != 5 {
 		t.Fatalf("span = %+v, want 3-5", span)
+	}
+}
+
+var diffFixture = []byte("diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,2 @@\n keep()\n-removed()\n+added()\n")
+
+func suggestionResult() *review.Result {
+	c := review.Comment{Path: "a.go", StartLine: 2, EndLine: 2, Content: "content a.go", Category: "bug", Severity: "low", ExistingCode: "removed()", SuggestionCode: "better()"}
+	return result(c)
+}
+
+func TestPublishInlineSuggestionsValidSpan(t *testing.T) {
+	f := newFake()
+	f.diff = diffFixture
+	stats, err := Publish(suggestionResult(), f, Options{RunTag: "t", CommitID: "s", Suggestions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Inline != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	body := f.createdComments[0].Body
+	if !strings.Contains(body, "**Before:**") || !strings.Contains(body, "**After:**") ||
+		!strings.Contains(body, "removed()") || !strings.Contains(body, "better()") {
+		t.Fatalf("inline body missing suggestion blocks:\n%s", body)
+	}
+}
+
+func TestPublishInlineSuggestionsAfterOnly(t *testing.T) {
+	f := newFake()
+	f.diff = diffFixture
+	r := result(review.Comment{Path: "a.go", StartLine: 2, EndLine: 2, Content: "x", SuggestionCode: "better()"})
+	if _, err := Publish(r, f, Options{RunTag: "t", CommitID: "s", Suggestions: true}); err != nil {
+		t.Fatal(err)
+	}
+	body := f.createdComments[0].Body
+	if strings.Contains(body, "**Before:**") || !strings.Contains(body, "**After:**") || !strings.Contains(body, "better()") {
+		t.Fatalf("expected After-only block:\n%s", body)
+	}
+}
+
+func TestPublishSuggestionsFailOpenWithoutDiff(t *testing.T) {
+	f := newFake()
+	f.getDiffErr = fmt.Errorf("boom")
+	stats, err := Publish(suggestionResult(), f, Options{RunTag: "t", CommitID: "s", Suggestions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Inline != 1 {
+		t.Fatalf("fail-open must keep the comment: %+v", stats)
+	}
+	if !strings.Contains(f.createdComments[0].Body, "**After:**") {
+		t.Fatalf("fail-open must include suggestions:\n%s", f.createdComments[0].Body)
+	}
+}
+
+func TestPublishSuggestionsFailOpenUnparseableDiff(t *testing.T) {
+	f := newFake()
+	f.diff = []byte("not a diff")
+	stats, err := Publish(suggestionResult(), f, Options{RunTag: "t", CommitID: "s", Suggestions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Inline != 1 || !strings.Contains(f.createdComments[0].Body, "**After:**") {
+		t.Fatalf("unparseable diff must fail open: %+v", stats)
+	}
+}
+
+func TestPublishInvalidSpanSuggestionsInFallback(t *testing.T) {
+	f := newFake()
+	f.diff = diffFixture
+	r := result(review.Comment{Path: "a.go", StartLine: 0, EndLine: 99, Content: "x", Category: "bug", Severity: "low", SuggestionCode: "better()"})
+	stats, err := Publish(r, f, Options{RunTag: "t", CommitID: "s", Suggestions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Inline != 0 || stats.Failed != 1 {
+		t.Fatalf("invalid span must drop comment: %+v", stats)
+	}
+	final := f.editedSummary[55]
+	if !strings.Contains(final, "out of diff") || !strings.Contains(final, "**After:**") {
+		t.Fatalf("fallback must keep suggestion blocks:\n%s", final)
+	}
+}
+
+func TestPublishSuggestionsDisabled(t *testing.T) {
+	f := newFake()
+	f.diff = diffFixture
+	stats, err := Publish(suggestionResult(), f, Options{RunTag: "t", CommitID: "s", Suggestions: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Inline != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if strings.Contains(f.createdComments[0].Body, "**After:**") {
+		t.Fatalf("suggestions off must omit blocks inline:\n%s", f.createdComments[0].Body)
+	}
+	// Summary fallback (no line info) must also omit blocks.
+	r := result(review.Comment{Path: "a.go", Content: "no lines", Category: "bug", Severity: "low", SuggestionCode: "better()"})
+	f2 := newFake()
+	if _, err := Publish(r, f2, Options{RunTag: "t", CommitID: "s", Suggestions: false}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(f2.editedSummary[55], "**After:**") || strings.Contains(f2.editedSummary[55], "<details>") {
+		t.Fatalf("suggestions off must omit blocks in fallback:\n%s", f2.editedSummary[55])
 	}
 }

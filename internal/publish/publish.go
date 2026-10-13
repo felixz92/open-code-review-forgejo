@@ -29,6 +29,9 @@ type Options struct {
 	Route         policy.Policy
 	// CommitID is the SHA OCR actually reviewed; "" falls back to the PR head.
 	CommitID string
+	// Suggestions controls whether suggestion blocks are rendered into
+	// inline and summary-fallback comment bodies.
+	Suggestions bool
 	// GetDiff is used by tests via the Poster interface; no extra fields.
 }
 
@@ -91,7 +94,7 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 		id := newCommentID(opts.RunTag)
 		inline = append(inline, inlineItem{
 			comment: c,
-			body:    format.FormatComment(c, id, c.StartLine, c.EndLine),
+			body:    format.FormatComment(c, id, c.StartLine, c.EndLine, false),
 			id:      id,
 			span:    incremental.NewSpan(c.StartLine, c.EndLine),
 		})
@@ -148,6 +151,11 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 			if invErr == nil && inv.Classify(it.comment.Path, it.comment.StartLine, it.comment.EndLine) == diffinv.Invalid {
 				failed = append(failed, failedItem{comment: it.comment, reason: "out of diff (line could not be resolved)"})
 				continue
+			}
+			if opts.Suggestions {
+				// Fail-open: when the diff is unavailable or unparseable
+				// (invErr != nil) suggestions are still included.
+				it.body += format.SuggestionBlocks(it.comment)
 			}
 			keep = append(keep, it)
 		}
@@ -331,7 +339,7 @@ func anchorSummary(p poster.Poster, opts Options, stats *Stats, noLine, routed [
 	if id := findSummaryComment(p, opts); id != 0 {
 		return id
 	}
-	body := format.WrapSummaryBody(format.BuildPreReviewBody(stats.Total, noLine, routed, warnings), opts.RunTag)
+	body := format.WrapSummaryBody(format.BuildPreReviewBody(stats.Total, noLine, routed, warnings, opts.Suggestions), opts.RunTag)
 	id, err := p.CreateIssueComment(body)
 	if err != nil {
 		log.Printf("[summary] anchor creation failed: %v", err)
@@ -359,10 +367,10 @@ func upsertSummary(p poster.Poster, opts Options, anchor int64, body string) str
 
 func finalizeBody(opts Options, stats *Stats, noLine, routed []format.SummaryItem, failed []failedItem, posted []inlineItem, warnings []review.Warning) string {
 	body := format.BuildSummaryBody(stats.Total, stats.Inline, stats.Summary, stats.Skipped, stats.Routed, stats.Failed, len(warnings))
-	body += format.FormatSummaryComments(noLine)
-	body += format.FormatSummaryComments(routed)
+	body += format.FormatSummaryComments(noLine, opts.Suggestions)
+	body += format.FormatSummaryComments(routed, opts.Suggestions)
 	for _, f := range failed {
-		body += format.FormatSummaryComments([]format.SummaryItem{{Comment: f.comment, Reason: f.reason}})
+		body += format.FormatSummaryComments([]format.SummaryItem{{Comment: f.comment, Reason: f.reason}}, opts.Suggestions)
 	}
 	if len(posted) == 0 && stats.Skipped > 0 {
 		body += "\n\n---\n\nℹ️ All inline comments overlapped with existing reviews; nothing new was posted."

@@ -32,6 +32,7 @@ type Config struct {
 	RouteCategories          string
 	FailOnSeverity           string
 	RunTag                   string
+	Suggestions              bool
 }
 
 const (
@@ -59,6 +60,7 @@ func ParseFlags(args []string) (*Config, error) {
 	fs.StringVar(&cfg.RouteCategories, "route-categories", "", "comma-separated categories to route to the summary")
 	fs.StringVar(&cfg.FailOnSeverity, "fail-on-severity", "", "exit non-zero when any comment is at-or-above this severity")
 	fs.StringVar(&cfg.RunTag, "run-tag", "", "per-run identity for idempotency tags (default: <pr>-<head sha>)")
+	fs.BoolVar(&cfg.Suggestions, "suggestions", true, "include Before/After suggestion blocks in comment bodies")
 
 	if err := fs.Parse(reorderArgs(args, boolFlags(fs))); err != nil {
 		return nil, err
@@ -225,6 +227,7 @@ func run(cfg *Config) int {
 		OverlapThresh: cfg.IncrementalOverlapThresh,
 		Route:         policy.Build(cfg.RouteSeverityBelow, cfg.RouteCategories),
 		CommitID:      commitID,
+		Suggestions:   cfg.Suggestions,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

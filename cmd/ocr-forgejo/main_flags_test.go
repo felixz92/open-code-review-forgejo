@@ -70,6 +70,32 @@ func TestParseFlagsBoolFlagDoesNotConsumeNextToken(t *testing.T) {
 	}
 }
 
+func TestParseFlagsSuggestionsDefaultTrue(t *testing.T) {
+	cfg, err := ParseFlags([]string{
+		"--url", "https://forge.example.com", "--repo", "o/r", "--pr", "1",
+		"/tmp/result.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Suggestions {
+		t.Fatalf("--suggestions must default to true, cfg = %+v", cfg)
+	}
+}
+
+func TestParseFlagsSuggestionsFalse(t *testing.T) {
+	cfg, err := ParseFlags([]string{
+		"--url", "https://forge.example.com", "--repo", "o/r", "--pr", "1",
+		"--suggestions=false", "/tmp/result.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Suggestions {
+		t.Fatalf("--suggestions=false must disable suggestions, cfg = %+v", cfg)
+	}
+}
+
 func TestValidateOverlapThresholdRange(t *testing.T) {
 	fs := flag.NewFlagSet("t", flag.ContinueOnError)
 	for _, tc := range []struct {

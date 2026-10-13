@@ -29,16 +29,28 @@ func TestBuildBadge(t *testing.T) {
 
 func TestFormatCommentInline(t *testing.T) {
 	c := &review.Comment{Path: "a.go", EndLine: 5, Category: "bug", Severity: "critical", Content: "fix this"}
-	got := FormatComment(c, "ocr-42-abc", 5, 14)
+	got := FormatComment(c, "ocr-42-abc", 5, 14, false)
 	want := "<!-- ocr-42-abc -->\n[bug · critical]\nfix this\n\n> File `a.go` lines 5-14"
 	if got != want {
 		t.Fatalf("FormatComment =\n%q\nwant\n%q", got, want)
 	}
 }
 
+func TestFormatCommentWithSuggestions(t *testing.T) {
+	c := &review.Comment{Path: "a.go", EndLine: 5, Content: "fix this", ExistingCode: "old", SuggestionCode: "new"}
+	with := FormatComment(c, "ocr-42-abc", 5, 5, true)
+	if !strings.Contains(with, "**Before:**") || !strings.Contains(with, "**After:**") {
+		t.Fatalf("suggestions expected:\n%s", with)
+	}
+	without := FormatComment(c, "ocr-42-abc", 5, 5, false)
+	if strings.Contains(without, "**Before:**") || strings.Contains(without, "**After:**") {
+		t.Fatalf("suggestions should be omitted:\n%s", without)
+	}
+}
+
 func TestFormatCommentNoSpan(t *testing.T) {
 	c := &review.Comment{Path: "a.go", EndLine: 5, Content: "fix this"}
-	got := FormatComment(c, "ocr-42-abc", 0, 0)
+	got := FormatComment(c, "ocr-42-abc", 0, 0, false)
 	if strings.Contains(got, "lines 0-0") {
 		t.Fatalf("no span should be stated, got %q", got)
 	}
@@ -79,24 +91,39 @@ func TestSuggestionBlocksAbsent(t *testing.T) {
 	if got := SuggestionBlocks(&review.Comment{}); got != "" {
 		t.Fatalf("expected empty, got %q", got)
 	}
-	if got := SuggestionBlocks(&review.Comment{SuggestionCode: "x"}); got != "" {
-		t.Fatalf("suggestion without existing code should be omitted, got %q", got)
+	if got := SuggestionBlocks(&review.Comment{ExistingCode: "old"}); got != "" {
+		t.Fatalf("existing code without suggestion should be omitted, got %q", got)
+	}
+}
+
+func TestSuggestionBlocksAfterOnly(t *testing.T) {
+	c := &review.Comment{SuggestionCode: "new"}
+	got := SuggestionBlocks(c)
+	if strings.Contains(got, "**Before:**") {
+		t.Fatalf("After-only block should not contain Before: %q", got)
+	}
+	if !strings.Contains(got, "**After:**") || !strings.Contains(got, "\nnew\n") {
+		t.Fatalf("missing After block: %q", got)
 	}
 }
 
 func TestFormatCommentFallback(t *testing.T) {
 	c := &review.Comment{Path: "a.go", StartLine: 10, EndLine: 14, Category: "bug", Severity: "high", Content: "bad code", ExistingCode: "bad", SuggestionCode: "good"}
-	got := FormatCommentFallback(c, "out of diff")
-	for _, want := range []string{"[bug · high]", "`a.go`", "L10-L14", "out of diff", "bad code", "<details>"} {
+	got := FormatCommentFallback(c, "out of diff", true)
+	for _, want := range []string{"[bug · high]", "`a.go`", "L10-L14", "out of diff", "bad code", "<details>", "**Before:**", "**After:**"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("fallback missing %q:\n%s", want, got)
 		}
+	}
+	without := FormatCommentFallback(c, "out of diff", false)
+	if strings.Contains(without, "<details>") || strings.Contains(without, "**Before:**") {
+		t.Fatalf("fallback with suggestions off should omit blocks:\n%s", without)
 	}
 }
 
 func TestFormatCommentFallbackWithoutReason(t *testing.T) {
 	c := &review.Comment{Path: "a.go", StartLine: 3, EndLine: 3, Content: "x"}
-	got := FormatCommentFallback(c, "")
+	got := FormatCommentFallback(c, "", true)
 	if strings.Contains(got, "⚠️") || strings.Contains(got, "<details>") {
 		t.Fatalf("no reason/detail expected:\n%s", got)
 	}
@@ -142,7 +169,7 @@ func TestBuildSummaryBodySkipped(t *testing.T) {
 }
 
 func TestBuildPreReviewBody(t *testing.T) {
-	got := BuildPreReviewBody(2, []SummaryItem{{Comment: &review.Comment{Path: "a.go", EndLine: 1, Content: "x"}, Reason: "No line information provided"}}, []SummaryItem{{Comment: &review.Comment{Path: "b.go", EndLine: 2, Content: "y"}, Reason: "Routed"}}, nil)
+	got := BuildPreReviewBody(2, []SummaryItem{{Comment: &review.Comment{Path: "a.go", EndLine: 1, Content: "x"}, Reason: "No line information provided"}}, []SummaryItem{{Comment: &review.Comment{Path: "b.go", EndLine: 2, Content: "y"}, Reason: "Routed"}}, nil, true)
 	for _, want := range []string{"found **2** issue(s)", "_Posting review comments…_", "Routed to summary by policy: 1 comment(s)", "No line information provided", "`b.go`"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("pre-review missing %q:\n%s", want, got)
@@ -161,7 +188,7 @@ func TestFormatSummaryComments(t *testing.T) {
 	got := FormatSummaryComments([]SummaryItem{
 		{Comment: &review.Comment{Path: "a.go", EndLine: 1, Content: "c1"}, Reason: "r1"},
 		{Comment: &review.Comment{Path: "b.go", EndLine: 2, Content: "c2"}},
-	})
+	}, true)
 	if strings.Count(got, "---") < 2 {
 		t.Fatalf("expected separators between items:\n%s", got)
 	}
@@ -180,7 +207,7 @@ func TestWrapSummaryBody(t *testing.T) {
 
 func TestFormatCommentNeutralizesCommentClose(t *testing.T) {
 	c := &review.Comment{Path: "a.go", Content: "see <!-- ocr-summary --> trap"}
-	out := FormatComment(c, "ocr-x-1", 1, 1)
+	out := FormatComment(c, "ocr-x-1", 1, 1, false)
 	if strings.Contains(out, "ocr-summary -->") {
 		t.Fatalf("marker not neutralized: %q", out)
 	}

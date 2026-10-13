@@ -73,11 +73,15 @@ func fencedBlock(content string) string {
 	return fence + "\n" + content + fence
 }
 
-// SuggestionBlocks renders Before/After fenced blocks for a comment that has
-// both existing and suggested code. Returns "" otherwise.
+// SuggestionBlocks renders Before/After fenced blocks when a comment has both
+// existing and suggested code, an After-only block when it has only suggested
+// code. Returns "" otherwise.
 func SuggestionBlocks(c *review.Comment) string {
-	if c == nil || c.SuggestionCode == "" || c.ExistingCode == "" {
+	if c == nil || c.SuggestionCode == "" {
 		return ""
+	}
+	if c.ExistingCode == "" {
+		return "\n\n**After:**\n" + fencedBlock(c.SuggestionCode)
 	}
 	return "\n\n**Before:**\n" + fencedBlock(c.ExistingCode) +
 		"\n\n**After:**\n" + fencedBlock(c.SuggestionCode)
@@ -86,7 +90,9 @@ func SuggestionBlocks(c *review.Comment) string {
 // FormatComment assembles the visible inline comment body: the per-comment id
 // tag (for idempotent matching and incremental detection), the badge, the
 // content, and the stated line span when the comment covers multiple lines.
-func FormatComment(c *review.Comment, commentID string, startLine, endLine int64) string {
+// When withSuggestions is true, suggestion blocks are appended when the
+// comment carries suggestion code.
+func FormatComment(c *review.Comment, commentID string, startLine, endLine int64, withSuggestions bool) string {
 	var b strings.Builder
 	if commentID != "" {
 		b.WriteString("<!-- " + commentID + " -->\n")
@@ -100,11 +106,16 @@ func FormatComment(c *review.Comment, commentID string, startLine, endLine int64
 	if startLine > 0 && endLine > 0 && startLine != endLine {
 		fmt.Fprintf(&b, "\n\n> File `%s` lines %d-%d", c.Path, startLine, endLine)
 	}
+	if withSuggestions {
+		b.WriteString(SuggestionBlocks(c))
+	}
 	return b.String()
 }
 
 // FormatCommentFallback renders a comment for display inside the summary.
-func FormatCommentFallback(c *review.Comment, reason string) string {
+// When withSuggestions is true, collapsible suggestion blocks are appended
+// when the comment carries suggestion code.
+func FormatCommentFallback(c *review.Comment, reason string, withSuggestions bool) string {
 	var b strings.Builder
 	if badge := BuildBadge(c); badge != "" {
 		b.WriteString(badge + "\n")
@@ -122,18 +133,20 @@ func FormatCommentFallback(c *review.Comment, reason string) string {
 		b.WriteString("⚠️ Could not be posted inline: " + reason + "\n\n")
 	}
 	b.WriteString(c.Content)
-	if blocks := SuggestionBlocks(c); blocks != "" {
-		b.WriteString("\n\n<details><summary>💡 Suggested Change</summary>\n" + blocks + "\n\n</details>")
+	if withSuggestions {
+		if blocks := SuggestionBlocks(c); blocks != "" {
+			b.WriteString("\n\n<details><summary>💡 Suggested Change</summary>\n" + blocks + "\n\n</details>")
+		}
 	}
 	return b.String()
 }
 
 // FormatSummaryComments renders a list of summary items, separated by rules.
-func FormatSummaryComments(items []SummaryItem) string {
+func FormatSummaryComments(items []SummaryItem, withSuggestions bool) string {
 	var b strings.Builder
 	for _, it := range items {
 		b.WriteString("\n\n---\n\n")
-		b.WriteString(FormatCommentFallback(it.Comment, it.Reason))
+		b.WriteString(FormatCommentFallback(it.Comment, it.Reason, withSuggestions))
 	}
 	return b.String()
 }
@@ -197,7 +210,7 @@ func BuildSummaryBody(total, inline, summary, skipped, routed, failed, warningCo
 
 // BuildPreReviewBody renders the anchor summary body shown while inline
 // comments are being posted.
-func BuildPreReviewBody(total int, noLine, routed []SummaryItem, warnings []review.Warning) string {
+func BuildPreReviewBody(total int, noLine, routed []SummaryItem, warnings []review.Warning, withSuggestions bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "🔍 **OpenCodeReview** found **%d** issue(s) in this PR.", total)
 	if total > 0 {
@@ -206,8 +219,8 @@ func BuildPreReviewBody(total int, noLine, routed []SummaryItem, warnings []revi
 			fmt.Fprintf(&b, "\n- 📋 Routed to summary by policy: %d comment(s)", len(routed))
 		}
 	}
-	b.WriteString(FormatSummaryComments(noLine))
-	b.WriteString(FormatSummaryComments(routed))
+	b.WriteString(FormatSummaryComments(noLine, withSuggestions))
+	b.WriteString(FormatSummaryComments(routed, withSuggestions))
 	b.WriteString(FormatWarnings(warnings))
 	return b.String()
 }
