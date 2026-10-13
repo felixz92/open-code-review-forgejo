@@ -92,6 +92,9 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 			continue
 		}
 		id := newCommentID(opts.RunTag)
+		// Suggestions stay off here: blocks are appended after the diff
+		// pre-check passes (the keep loop below appends SuggestionBlocks
+		// once); passing opts.Suggestions here would double-render them.
 		inline = append(inline, inlineItem{
 			comment: c,
 			body:    format.FormatComment(c, id, c.StartLine, c.EndLine, false),
