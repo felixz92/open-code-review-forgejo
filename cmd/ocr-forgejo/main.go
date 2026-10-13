@@ -59,7 +59,7 @@ func ParseFlags(args []string) (*Config, error) {
 	fs.StringVar(&cfg.FailOnSeverity, "fail-on-severity", "", "exit non-zero when any comment is at-or-above this severity")
 	fs.StringVar(&cfg.RunTag, "run-tag", "", "per-run identity for idempotency tags (default: <pr>-<head sha>)")
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(reorderArgs(args)); err != nil {
 		return nil, err
 	}
 	if fs.NArg() > 1 {
@@ -75,6 +75,34 @@ func ParseFlags(args []string) (*Config, error) {
 		cfg.Token = os.Getenv("GIT_TOKEN")
 	}
 	return cfg, nil
+}
+
+// reorderArgs lets flags appear after the positional input by partitioning
+// args into flag arguments (with their values) and positional arguments.
+// "--" sends everything after it to positionals; a lone "-" is a positional.
+func reorderArgs(args []string) (reordered []string) {
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--":
+			positional = append(positional, args[i+1:]...)
+			i = len(args)
+		case isFlag(arg):
+			reordered = append(reordered, arg)
+			if !strings.Contains(arg, "=") && i+1 < len(args) && !isFlag(args[i+1]) {
+				reordered = append(reordered, args[i+1])
+				i++
+			}
+		default:
+			positional = append(positional, arg)
+		}
+	}
+	return append(reordered, positional...)
+}
+
+func isFlag(arg string) bool {
+	return len(arg) > 1 && strings.HasPrefix(arg, "-")
 }
 
 func (c *Config) validate(fs *flag.FlagSet) error {
@@ -95,6 +123,7 @@ func (c *Config) validate(fs *flag.FlagSet) error {
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return fmt.Errorf("--repo must be owner/name, got %q", c.Repo)
 	}
+	c.Owner, c.Repo = parts[0], parts[1]
 	return nil
 }
 
