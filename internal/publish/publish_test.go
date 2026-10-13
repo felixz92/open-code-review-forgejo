@@ -1,6 +1,7 @@
 package publish
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 type fakePoster struct {
 	// scripted
 	reviews        []poster.ReviewInfo
+	listReviewsErr error
 	reviewComments map[int64][]poster.ReviewCommentInfo
 	issueComments  []poster.IssueCommentInfo
 	diff           []byte
@@ -53,6 +55,9 @@ func (f *fakePoster) DeletePullReview(reviewID int64) error {
 	return nil
 }
 func (f *fakePoster) ListPullReviews() ([]poster.ReviewInfo, error) {
+	if f.listReviewsErr != nil {
+		return nil, f.listReviewsErr
+	}
 	return f.reviews, nil
 }
 func (f *fakePoster) ListPullReviewComments(reviewID int64) ([]poster.ReviewCommentInfo, error) {
@@ -209,22 +214,18 @@ func TestPublishIncrementalSkipsOverlap(t *testing.T) {
 }
 
 func TestPublishIncrementalDisabledWhenHistoryFails(t *testing.T) {
-	// A poster whose history read fails: incremental filtering disabled, run proceeds.
 	f := newFake()
-	f.reviews = []poster.ReviewInfo{{ID: 9, State: "PENDING", Reviewer: "ci-bot"}}
-	// Simulate read failure via nil map + reviews listing failing is complex;
-	// instead verify that a pending review from the bot is deleted (cleanup)
-	// even when comments cannot be listed.
+	f.listReviewsErr = errors.New("read API down")
 	r := result(c("a.go", 1, 1, "low"))
 	stats, err := Publish(r, f, Options{RunTag: "t", CommitID: "s", Incremental: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stats.Inline != 1 {
-		t.Fatalf("run must proceed: %+v", stats)
+	if stats.Inline != 1 || stats.Skipped != 0 {
+		t.Fatalf("history failure must disable filtering and proceed: %+v", stats)
 	}
-	if len(f.deletedReviews) != 1 || f.deletedReviews[0] != 9 {
-		t.Fatalf("stale pending bot review must be deleted, got %v", f.deletedReviews)
+	if stats.Failed != 0 {
+		t.Fatalf("no comments may be marked failed on history read failure: %+v", stats)
 	}
 }
 

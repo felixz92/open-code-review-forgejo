@@ -131,13 +131,37 @@ func main() {
 	cfg, err := ParseFlags(os.Args[1:])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
+		writeEarlyStats(cfg)
 		os.Exit(2)
 	}
-	if cfg.Token == "" && !cfg.DryRun {
+	if tokenMissing(cfg) {
 		fmt.Fprintln(os.Stderr, "error: GIT_TOKEN is not set")
+		writeEarlyStats(cfg)
 		os.Exit(2)
 	}
 	os.Exit(run(cfg))
+}
+
+// tokenMissing reports whether the run cannot authenticate: no token and not
+// a dry-run.
+func tokenMissing(cfg *Config) bool {
+	return cfg.Token == "" && !cfg.DryRun
+}
+
+// writeEarlyStats best-effort writes a zero-filled stats file on early exit
+// paths so downstream CI jobs always find the artifact.
+func writeEarlyStats(cfg *Config) {
+	path := earlyStatsPath(cfg)
+	if err := publish.WriteStatsFile(path, &publish.Stats{}); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not write stats file:", err)
+	}
+}
+
+func earlyStatsPath(cfg *Config) string {
+	if cfg != nil && cfg.StatsFilePath != "" {
+		return cfg.StatsFilePath
+	}
+	return defaultStatsFile
 }
 
 func run(cfg *Config) int {
