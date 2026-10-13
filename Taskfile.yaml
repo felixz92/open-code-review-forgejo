@@ -1,0 +1,67 @@
+version: '3'
+
+vars:
+  BINARY_NAME: orc-forgejo
+
+tasks:
+  default:
+    cmds:
+      - task: build
+
+  # Install dependencies
+  deps:
+    desc: Install dependencies
+    cmds:
+      - go mod tidy
+
+  # Build the application
+  build:
+    desc: Build the application
+    cmds:
+      - go build -o {{.BINARY_NAME}} {{.MAIN_PKG}}
+    sources:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+    generates:
+      - "{{.BINARY_NAME}}"
+
+  # Test the application
+  test:
+    desc: Run tests
+    cmds:
+      - go test ./... -v -covermode=atomic -coverprofile=coverage.out
+
+  # Run tests with coverage
+  test-coverage:
+    desc: Run tests with coverage
+    cmds:
+      - go test ./... -coverprofile=coverage.out
+      - go tool cover -html=coverage.out -o coverage.html
+
+  # Lint the code
+  lint:
+    desc: Lint the code
+    cmds:
+      - golangci-lint run
+
+  # Format the code
+  fmt:
+    desc: Format the code
+    cmds:
+      - go fmt ./...
+
+  # Vet the code
+  vet:
+    desc: Vet the code
+    cmds:
+      - go vet ./...
+
+  # Clean build artifacts
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - rm -f {{.BINARY_NAME}}
+      - rm -f coverage.out
+      - rm -f coverage.html
+
