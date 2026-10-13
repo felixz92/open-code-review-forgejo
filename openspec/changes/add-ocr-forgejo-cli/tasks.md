@@ -35,4 +35,4 @@
 ## 7. Integration verification
 
 - [x] 7.1 Run `go vet ./...` and `go test ./...`; verify all green
-- [ ] 7.2 Optional manual smoke against a real Forgejo instance with a scratch PR: run twice (sticky summary updates in place, no duplicate reviews), run with an out-of-diff line (dropped with reason), run with `--incremental` after adding an overlapping finding (skip counted); record results
+- [x] 7.2 Optional manual smoke against a real Forgejo instance with a scratch PR: run twice (sticky summary updates in place, no duplicate reviews), run with an out-of-diff line (dropped with reason), run with `--incremental` after adding an overlapping finding (skip counted); record results
