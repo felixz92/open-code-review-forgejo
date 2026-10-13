@@ -3,8 +3,10 @@ package poster
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -172,6 +174,10 @@ func TestForgejoReviewFlow(t *testing.T) {
 	p, _ := newTestForgejo(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/owner/repo/pulls/42/reviews":
+			body, _ := io.ReadAll(r.Body)
+			if !strings.Contains(string(body), `"body":"`) || strings.Contains(string(body), `"body":""`) {
+				t.Errorf("PENDING creation requires a non-empty body, got %s", body)
+			}
 			fmt.Fprint(w, `{"id": 5, "state": "PENDING"}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/owner/repo/pulls/42/reviews/5":
 			fmt.Fprint(w, `{"id": 5, "state": "COMMENT"}`)

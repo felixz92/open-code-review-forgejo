@@ -175,6 +175,7 @@ func backoffDelay(attempt int, retryAfter time.Duration) time.Duration {
 func (p *ForgejoPoster) CreatePullReview(comments []ReviewCommentInput, commitID string) (int64, error) {
 	opts := forgejo.CreatePullReviewOptions{
 		State:    forgejo.ReviewStatePending,
+		Body:     "🔍 OpenCodeReview: automated review in progress",
 		CommitID: commitID,
 	}
 	for _, c := range comments {

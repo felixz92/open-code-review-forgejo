@@ -140,7 +140,8 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 		}
 		inv, invErr := diffinv.New(diff)
 		if invErr != nil {
-			log.Printf("[diff-precheck] diff not parseable, keeping all comments: %v", invErr)
+			log.Printf("[diff-precheck] diff not parseable, keeping all comments: %v (first 200 chars: %q)",
+				invErr, preview(diff))
 		}
 		var keep []inlineItem
 		for _, it := range inline {
@@ -207,6 +208,14 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 	finalBody := finalizeBody(opts, stats, noLine, routed, failed, inline, result.Warnings)
 	stats.SummaryURL = upsertSummary(p, opts, anchor, finalBody)
 	return stats, nil
+}
+
+func preview(b []byte) string {
+	s := string(b)
+	if len(s) > 200 {
+		s = s[:200]
+	}
+	return s
 }
 
 func submitBody(stats *Stats, inline []inlineItem) string {
