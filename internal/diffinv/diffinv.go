@@ -123,12 +123,27 @@ func New(diff []byte) (*Inventory, error) {
 }
 
 func parseGitPath(line string) string {
-	// "diff --git a/<path> b/<path>"
-	parts := strings.Fields(line)
-	if len(parts) >= 4 {
-		return strings.TrimPrefix(parts[3], "b/")
+	// "diff --git a/<path> b/<path>". Paths may contain spaces (git does not
+	// quote them), so locate the new path by its " b/" separator rather than
+	// splitting on whitespace. C-quoted paths use " \"b/" instead.
+	const sep = " b/"
+	const quotedSep = " \"b/"
+	path := ""
+	if i := strings.LastIndex(line, quotedSep); i >= 0 {
+		path = line[i+len(quotedSep):]
+		path = strings.TrimSuffix(path, "\"")
+		if u, err := strconv.Unquote("\"" + path + "\""); err == nil {
+			path = u
+		}
+	} else if i := strings.LastIndex(line, sep); i >= 0 {
+		path = line[i+len(sep):]
+		if strings.HasPrefix(path, "\"") {
+			if u, err := strconv.Unquote(path); err == nil {
+				path = u
+			}
+		}
 	}
-	return ""
+	return path
 }
 
 // Classify resolves a comment's line range against the inventory:
@@ -141,7 +156,9 @@ func (inv *Inventory) Classify(path string, start, end int64) Class {
 		start = end
 	}
 	if start > end {
-		return Invalid
+		// Reversed range: normalize like incremental.NewSpan instead of
+		// rejecting, so the same malformed comment is handled consistently.
+		start, end = end, start
 	}
 	if !inv.Complete {
 		return Unknown

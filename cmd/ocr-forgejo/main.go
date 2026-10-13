@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -59,7 +60,7 @@ func ParseFlags(args []string) (*Config, error) {
 	fs.StringVar(&cfg.FailOnSeverity, "fail-on-severity", "", "exit non-zero when any comment is at-or-above this severity")
 	fs.StringVar(&cfg.RunTag, "run-tag", "", "per-run identity for idempotency tags (default: <pr>-<head sha>)")
 
-	if err := fs.Parse(reorderArgs(args)); err != nil {
+	if err := fs.Parse(reorderArgs(args, boolFlags(fs))); err != nil {
 		return nil, err
 	}
 	if fs.NArg() > 1 {
@@ -69,7 +70,7 @@ func ParseFlags(args []string) (*Config, error) {
 		cfg.InputPath = fs.Arg(0)
 	}
 	if err := cfg.validate(fs); err != nil {
-		return nil, err
+		return cfg, err
 	}
 	if cfg.Token == "" {
 		cfg.Token = os.Getenv("GIT_TOKEN")
@@ -77,10 +78,23 @@ func ParseFlags(args []string) (*Config, error) {
 	return cfg, nil
 }
 
+// boolFlags records the FlagSet's boolean flags: they never consume a
+// separate value token in reorderArgs.
+func boolFlags(fs *flag.FlagSet) map[string]bool {
+	out := map[string]bool{}
+	fs.VisitAll(func(f *flag.Flag) {
+		if bv, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bv.IsBoolFlag() {
+			out[f.Name] = true
+		}
+	})
+	return out
+}
+
 // reorderArgs lets flags appear after the positional input by partitioning
 // args into flag arguments (with their values) and positional arguments.
 // "--" sends everything after it to positionals; a lone "-" is a positional.
-func reorderArgs(args []string) (reordered []string) {
+// Boolean flags never consume the next token as their value.
+func reorderArgs(args []string, bools map[string]bool) (reordered []string) {
 	var positional []string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -90,7 +104,8 @@ func reorderArgs(args []string) (reordered []string) {
 			i = len(args)
 		case isFlag(arg):
 			reordered = append(reordered, arg)
-			if !strings.Contains(arg, "=") && i+1 < len(args) && !isFlag(args[i+1]) {
+			name := strings.TrimLeft(arg, "-")
+			if !bools[name] && !strings.Contains(arg, "=") && i+1 < len(args) && !isFlag(args[i+1]) {
 				reordered = append(reordered, args[i+1])
 				i++
 			}
@@ -118,6 +133,9 @@ func (c *Config) validate(fs *flag.FlagSet) error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required flag(s): %s", strings.Join(missing, ", "))
+	}
+	if c.Incremental && (c.IncrementalOverlapThresh <= 0 || c.IncrementalOverlapThresh >= 1) {
+		return fmt.Errorf("--incremental-overlap-threshold must be in (0, 1), got %v", c.IncrementalOverlapThresh)
 	}
 	parts := strings.SplitN(c.Repo, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
@@ -169,9 +187,10 @@ func run(cfg *Config) int {
 	if cfg.DryRun {
 		p = poster.NewDryRun()
 	} else {
-		fp, err := poster.NewForgejo(cfg.URL, cfg.Owner, cfg.Repo, cfg.PRIndex, cfg.Token, nil)
+		fp, err := poster.NewForgejo(context.Background(), cfg.URL, cfg.Owner, cfg.Repo, cfg.PRIndex, cfg.Token, nil)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
+			_ = publish.WriteStatsFile(cfg.StatsFilePath, &publish.Stats{})
 			return 1
 		}
 		p = fp
@@ -209,6 +228,9 @@ func run(cfg *Config) int {
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
+		if stats == nil {
+			stats = &publish.Stats{}
+		}
 		_ = publish.WriteStatsFile(cfg.StatsFilePath, stats)
 		return 1
 	}

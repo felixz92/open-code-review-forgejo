@@ -177,3 +177,11 @@ func TestWrapSummaryBody(t *testing.T) {
 		t.Fatalf("WrapSummaryBody = %q, want %q", got, want)
 	}
 }
+
+func TestFormatCommentNeutralizesCommentClose(t *testing.T) {
+	c := &review.Comment{Path: "a.go", Content: "see <!-- ocr-summary --> trap"}
+	out := FormatComment(c, "ocr-x-1", 1, 1)
+	if strings.Contains(out, "ocr-summary -->") {
+		t.Fatalf("marker not neutralized: %q", out)
+	}
+}

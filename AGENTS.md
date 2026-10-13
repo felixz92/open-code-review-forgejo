@@ -75,7 +75,7 @@ needed). Prefer the Taskfile targets:
 
 | Task | What it does |
 |------|--------------|
-| `task build` | `go build` the binary (`orc-forgejo` per `Taskfile.yaml`) |
+| `task build` | `go build` the binary (`bin/ocr-forgejo` per `Taskfile.yaml`) |
 | `task test` | `go test ./...` with coverage profile |
 | `task test-coverage` | Tests plus HTML coverage report |
 | `task lint` | `golangci-lint run` |

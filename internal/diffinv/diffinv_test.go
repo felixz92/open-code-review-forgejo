@@ -65,7 +65,7 @@ func TestClassify(t *testing.T) {
 		{"in range", "a.go", 1, 4, Valid},
 		{"single in range", "a.go", 0, 3, Valid},
 		{"out of range", "a.go", 0, 99, Invalid},
-		{"reversed", "a.go", 4, 1, Invalid},
+		{"reversed", "a.go", 4, 1, Valid},
 		{"unknown file", "c.go", 0, 3, Invalid},
 	}
 	for _, tt := range tests {
@@ -105,5 +105,19 @@ func TestClassifyNoEndLine(t *testing.T) {
 	inv, _ := New([]byte(simpleDiff))
 	if got := inv.Classify("a.go", 0, 0); got != Unknown {
 		t.Fatalf("comment without end line should be unknown, got %v", got)
+	}
+}
+
+func TestParseGitPathWithSpaces(t *testing.T) {
+	got := parseGitPath("diff --git a/foo bar.go b/foo bar.go")
+	if got != "foo bar.go" {
+		t.Fatalf("parseGitPath = %q, want %q", got, "foo bar.go")
+	}
+}
+
+func TestParseGitPathQuoted(t *testing.T) {
+	got := parseGitPath(`diff --git "a/\346\226\207" "b/\346\226\207"`)
+	if got != "文" {
+		t.Fatalf("parseGitPath = %q", got)
 	}
 }

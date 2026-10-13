@@ -155,8 +155,14 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 	}
 
 	// Idempotent retry cleanup: delete stale pending reviews of this bot.
-	botLogin, _ := p.WhoAmI()
-	deleteStalePending(p, botLogin)
+	// Unknown identity means ownership cannot be proven, so cleanup is
+	// skipped to avoid deleting other users' pending reviews.
+	botLogin, err := p.WhoAmI()
+	if err != nil {
+		log.Printf("[cleanup] skipping stale pending review cleanup, identity unknown: %v", err)
+	} else {
+		deleteStalePending(p, botLogin)
+	}
 
 	// Summary anchor (pre-review body) before posting.
 	anchor := anchorSummary(p, opts, stats, noLine, routed, result.Warnings)
@@ -165,7 +171,16 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 	if len(inline) > 0 {
 		commitID := opts.CommitID
 		if commitID == "" {
-			if pr, err := p.GetPullRequest(); err == nil {
+			pr, prErr := p.GetPullRequest()
+			if prErr != nil || pr == nil || pr.HeadSHA == "" {
+				// An empty commit makes the batch call guaranteed to fail;
+				// fail the comments up front with a clear reason.
+				for _, it := range inline {
+					failed = append(failed, failedItem{comment: it.comment, reason: "could not resolve reviewed commit for posting"})
+				}
+				inline = nil
+				log.Printf("[publish] could not resolve commit for posting: %v", prErr)
+			} else {
 				commitID = pr.HeadSHA
 			}
 		}
@@ -241,7 +256,7 @@ func deleteStalePending(p poster.Poster, botLogin string) {
 		return
 	}
 	for _, r := range reviews {
-		if r.State != "PENDING" || (botLogin != "" && r.Reviewer != botLogin) {
+		if r.State != "PENDING" || r.Reviewer != botLogin {
 			continue
 		}
 		if err := p.DeletePullReview(r.ID); err != nil {
@@ -276,9 +291,10 @@ func loadHistory(p poster.Poster) ([]incremental.HistoryEntry, error) {
 }
 
 // spanLineRange extracts the stated line span from our own multiline comment
-// bodies ("> File `path` lines S-E"); Forgejo positions are single-line only,
-// so the body is the only place we recorded the original span.
-var spanLineRange = regexp.MustCompile(`lines (\d+)-(\d+)`)
+// bodies. It is anchored to the "> File `path` lines S-E" note FormatComment
+// appends, so wording inside the comment content cannot be mistaken for the
+// recorded span.
+var spanLineRange = regexp.MustCompile(`(?m)^> File [\x60][^\x60]*[\x60] lines (\d+)-(\d+)\s*$`)
 
 func spanFromHistory(c poster.ReviewCommentInfo) *incremental.Span {
 	if m := spanLineRange.FindStringSubmatch(c.Body); m != nil {

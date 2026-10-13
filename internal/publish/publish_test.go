@@ -308,3 +308,11 @@ func TestPublishNonStickyCreatesFreshSummary(t *testing.T) {
 		t.Fatalf("non-sticky must create its own summary, created=%d", len(f.createdSummary))
 	}
 }
+
+func TestSpanFromHistoryIgnoresContentWording(t *testing.T) {
+	body := "Content mentioning lines 99-98 first.\n\n> File `a.go` lines 3-5\n"
+	span := spanFromHistory(poster.ReviewCommentInfo{Body: body, Path: "a.go"})
+	if span.Start != 3 || span.End != 5 {
+		t.Fatalf("span = %+v, want 3-5", span)
+	}
+}

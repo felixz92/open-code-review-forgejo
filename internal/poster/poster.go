@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
 	"time"
 
 	forgejo "codeberg.org/mvdkleijn/forgejo-sdk/forgejo/v3"
@@ -19,6 +20,11 @@ const (
 	retryBaseDelay = 2 * time.Second
 	// maxBackoff caps a single backoff delay before jitter.
 	maxBackoff = 60 * time.Second
+	// pageSize is the pagination page size for list endpoints.
+	pageSize = 50
+	// defaultForgejoVersion is the SDK version hint when OCR_FORGEJO_VERSION
+	// is unset.
+	defaultForgejoVersion = "1.22.0"
 )
 
 var errInvalidConfig = errors.New("poster: forgejo URL, owner, repo and PR index are required")
@@ -81,16 +87,21 @@ type ForgejoPoster struct {
 	sleep  func(time.Duration)
 }
 
-// NewForgejo builds a ForgejoPoster. sleep is injectable for tests; nil uses
-// time.Sleep.
-func NewForgejo(url, owner, repo string, prIndex int64, token string, sleep func(time.Duration)) (*ForgejoPoster, error) {
+// NewForgejo builds a ForgejoPoster. The context governs all API calls and
+// retry sleeps. sleep is injectable for tests; nil uses time.Sleep. The
+// Forgejo version hint can be overridden with OCR_FORGEJO_VERSION.
+func NewForgejo(ctx context.Context, url, owner, repo string, prIndex int64, token string, sleep func(time.Duration)) (*ForgejoPoster, error) {
 	if url == "" || owner == "" || repo == "" || prIndex <= 0 {
 		return nil, errInvalidConfig
 	}
+	version := os.Getenv("OCR_FORGEJO_VERSION")
+	if version == "" {
+		version = defaultForgejoVersion
+	}
 	client, err := forgejo.NewClient(url,
 		forgejo.SetToken(token),
-		forgejo.SetContext(context.Background()),
-		forgejo.SetForgejoVersion("1.22.0"),
+		forgejo.SetContext(ctx),
+		forgejo.SetForgejoVersion(version),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("poster: create client: %w", err)
@@ -101,20 +112,11 @@ func NewForgejo(url, owner, repo string, prIndex int64, token string, sleep func
 	return &ForgejoPoster{client: client, owner: owner, repo: repo, pr: prIndex, sleep: sleep}, nil
 }
 
-// retryResult carries the last response so headers can be inspected.
-type retryResult struct {
-	resp *forgejo.Response
-}
-
-// do runs fn with retry on 429/5xx/network errors. fn may inspect the last
-// response through the passed retryResult pointer.
-func (p *ForgejoPoster) do(operation string, rr *retryResult, fn func() (*forgejo.Response, error)) error {
+// do runs fn with retry on 429/5xx/network errors.
+func (p *ForgejoPoster) do(operation string, fn func() (*forgejo.Response, error)) error {
 	var lastErr error
 	for attempt := 0; ; attempt++ {
 		resp, err := fn()
-		if rr != nil {
-			rr.resp = resp
-		}
 		if err == nil {
 			return nil
 		}
@@ -156,19 +158,39 @@ func retryable(status int, err error) bool {
 	return status == http.StatusTooManyRequests || status >= 500
 }
 
-// backoffDelay computes the next retry delay: Retry-After when present,
-// otherwise exponential backoff, capped at maxBackoff, then widened by ±25%
-// jitter.
+// backoffDelay computes the next retry delay: the server-dictated Retry-After
+// wait verbatim when present, otherwise exponential backoff capped at
+// maxBackoff, widened by ±25% jitter.
 func backoffDelay(attempt int, retryAfter time.Duration) time.Duration {
-	base := retryAfter
-	if base <= 0 {
-		base = retryBaseDelay << attempt
+	if retryAfter > 0 {
+		return retryAfter
 	}
+	base := retryBaseDelay << attempt
 	if base > maxBackoff {
 		base = maxBackoff
 	}
 	jitter := 0.75 + rand.Float64()*0.5
 	return time.Duration(float64(base) * jitter)
+}
+
+// doCreate runs fn like do but only retries on responses with an HTTP status
+// (429/5xx). Network-level failures (no status) are not retried for
+// non-idempotent POSTs, where the server may have already accepted the
+// request.
+func (p *ForgejoPoster) doCreate(operation string, fn func() (*forgejo.Response, error)) error {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		resp, err := fn()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		status, header := statusOf(resp)
+		if status == 0 || !retryable(status, nil) || attempt >= maxRetries {
+			return fmt.Errorf("poster: %s: %w", operation, lastErr)
+		}
+		p.sleep(backoffDelay(attempt, retryAfterOf(header)))
+	}
 }
 
 // CreatePullReview creates a pending review with the given inline comments.
@@ -186,8 +208,7 @@ func (p *ForgejoPoster) CreatePullReview(comments []ReviewCommentInput, commitID
 		})
 	}
 	var reviewID int64
-	rr := &retryResult{}
-	err := p.do("create review", rr, func() (*forgejo.Response, error) {
+	err := p.doCreate("create review", func() (*forgejo.Response, error) {
 		review, resp, err := p.client.CreatePullReview(p.owner, p.repo, p.pr, opts)
 		if err == nil {
 			reviewID = review.ID
@@ -200,7 +221,7 @@ func (p *ForgejoPoster) CreatePullReview(comments []ReviewCommentInput, commitID
 // SubmitPullReview submits a pending review with the given event and body.
 func (p *ForgejoPoster) SubmitPullReview(reviewID int64, body string) error {
 	opts := forgejo.SubmitPullReviewOptions{State: forgejo.ReviewStateComment, Body: body}
-	return p.do("submit review", nil, func() (*forgejo.Response, error) {
+	return p.do("submit review", func() (*forgejo.Response, error) {
 		_, resp, err := p.client.SubmitPullReview(p.owner, p.repo, p.pr, reviewID, opts)
 		return resp, err
 	})
@@ -208,21 +229,23 @@ func (p *ForgejoPoster) SubmitPullReview(reviewID int64, body string) error {
 
 // DeletePullReview deletes an unsubmitted review.
 func (p *ForgejoPoster) DeletePullReview(reviewID int64) error {
-	return p.do("delete review", nil, func() (*forgejo.Response, error) {
+	return p.do("delete review", func() (*forgejo.Response, error) {
 		return p.client.DeletePullReview(p.owner, p.repo, p.pr, reviewID)
 	})
 }
 
-// ListPullReviews returns all reviews on the PR.
+// ListPullReviews returns all reviews on the PR, following pagination.
 func (p *ForgejoPoster) ListPullReviews() ([]ReviewInfo, error) {
 	var out []ReviewInfo
-	rr := &retryResult{}
-	err := p.do("list reviews", rr, func() (*forgejo.Response, error) {
-		reviews, resp, err := p.client.ListPullReviews(p.owner, p.repo, p.pr, forgejo.ListPullReviewsOptions{
-			ListOptions: forgejo.ListOptions{Page: 1, PageSize: 50},
-		})
-		if err == nil {
-			out = out[:0]
+	for page := 1; ; page++ {
+		page := page
+		err := p.do("list reviews", func() (*forgejo.Response, error) {
+			reviews, resp, err := p.client.ListPullReviews(p.owner, p.repo, p.pr, forgejo.ListPullReviewsOptions{
+				ListOptions: forgejo.ListOptions{Page: page, PageSize: pageSize},
+			})
+			if err != nil {
+				return resp, err
+			}
 			for _, r := range reviews {
 				info := ReviewInfo{ID: r.ID, State: string(r.State)}
 				if r.Reviewer != nil {
@@ -230,44 +253,52 @@ func (p *ForgejoPoster) ListPullReviews() ([]ReviewInfo, error) {
 				}
 				out = append(out, info)
 			}
+			return resp, nil
+		})
+		if err != nil {
+			return nil, err
 		}
-		return resp, err
-	})
-	return out, err
+		// The do() retry loop reruns fn from scratch, but out only grows on
+		// success; a short page ends pagination.
+		if len(out) < page*pageSize {
+			break
+		}
+	}
+	return out, nil
 }
 
-// ListPullReviewComments returns the comments of one review.
+// ListPullReviewComments returns the comments of one review. The SDK method
+// fetches all comments without pagination options.
 func (p *ForgejoPoster) ListPullReviewComments(reviewID int64) ([]ReviewCommentInfo, error) {
 	var out []ReviewCommentInfo
-	rr := &retryResult{}
-	err := p.do("list review comments", rr, func() (*forgejo.Response, error) {
+	err := p.do("list review comments", func() (*forgejo.Response, error) {
 		comments, resp, err := p.client.ListPullReviewComments(p.owner, p.repo, p.pr, reviewID)
-		if err == nil {
-			out = out[:0]
-			for _, c := range comments {
-				out = append(out, ReviewCommentInfo{Body: c.Body, Path: c.Path, NewLine: int64(c.LineNum)})
-			}
+		if err != nil {
+			return resp, err
 		}
-		return resp, err
+		for _, c := range comments {
+			out = append(out, ReviewCommentInfo{Body: c.Body, Path: c.Path, NewLine: int64(c.LineNum)})
+		}
+		return resp, nil
 	})
 	return out, err
 }
 
-// ListIssueComments returns all comments on the PR (PRs are issues).
+// ListIssueComments returns all comments on the PR (PRs are issues),
+// following pagination.
 func (p *ForgejoPoster) ListIssueComments() ([]IssueCommentInfo, error) {
 	var out []IssueCommentInfo
-	rr := &retryResult{}
-	err := p.do("list issue comments", rr, func() (*forgejo.Response, error) {
+	err := p.do("list issue comments", func() (*forgejo.Response, error) {
 		comments, resp, err := p.client.ListIssueComments(p.owner, p.repo, p.pr, forgejo.ListIssueCommentOptions{
-			ListOptions: forgejo.ListOptions{Page: 1, PageSize: 50},
+			ListOptions: forgejo.ListOptions{Page: len(out)/pageSize + 1, PageSize: pageSize},
 		})
-		if err == nil {
-			out = out[:0]
-			for _, c := range comments {
-				out = append(out, IssueCommentInfo{ID: c.ID, Body: c.Body})
-			}
+		if err != nil {
+			return resp, err
 		}
-		return resp, err
+		for _, c := range comments {
+			out = append(out, IssueCommentInfo{ID: c.ID, Body: c.Body})
+		}
+		return resp, nil
 	})
 	return out, err
 }
@@ -275,8 +306,7 @@ func (p *ForgejoPoster) ListIssueComments() ([]IssueCommentInfo, error) {
 // CreateIssueComment creates a comment on the PR and returns its ID.
 func (p *ForgejoPoster) CreateIssueComment(body string) (int64, error) {
 	var id int64
-	rr := &retryResult{}
-	err := p.do("create issue comment", rr, func() (*forgejo.Response, error) {
+	err := p.doCreate("create issue comment", func() (*forgejo.Response, error) {
 		comment, resp, err := p.client.CreateIssueComment(p.owner, p.repo, p.pr, forgejo.CreateIssueCommentOption{Body: body})
 		if err == nil {
 			id = comment.ID
@@ -288,7 +318,7 @@ func (p *ForgejoPoster) CreateIssueComment(body string) (int64, error) {
 
 // EditIssueComment updates the body of an existing PR comment.
 func (p *ForgejoPoster) EditIssueComment(commentID int64, body string) error {
-	return p.do("edit issue comment", nil, func() (*forgejo.Response, error) {
+	return p.do("edit issue comment", func() (*forgejo.Response, error) {
 		_, resp, err := p.client.EditIssueComment(p.owner, p.repo, commentID, forgejo.EditIssueCommentOption{Body: body})
 		return resp, err
 	})
@@ -297,8 +327,7 @@ func (p *ForgejoPoster) EditIssueComment(commentID int64, body string) error {
 // GetDiff returns the PR's unified diff.
 func (p *ForgejoPoster) GetDiff() ([]byte, error) {
 	var diff []byte
-	rr := &retryResult{}
-	err := p.do("get diff", rr, func() (*forgejo.Response, error) {
+	err := p.do("get diff", func() (*forgejo.Response, error) {
 		var resp *forgejo.Response
 		var err error
 		diff, resp, err = p.client.GetPullRequestDiff(p.owner, p.repo, p.pr, forgejo.PullRequestDiffOptions{})
@@ -310,10 +339,12 @@ func (p *ForgejoPoster) GetDiff() ([]byte, error) {
 // GetPullRequest returns PR metadata needed for commit binding and run tags.
 func (p *ForgejoPoster) GetPullRequest() (*PullRequestInfo, error) {
 	var info *PullRequestInfo
-	rr := &retryResult{}
-	err := p.do("get pull request", rr, func() (*forgejo.Response, error) {
+	err := p.do("get pull request", func() (*forgejo.Response, error) {
 		pr, resp, err := p.client.GetPullRequest(p.owner, p.repo, p.pr)
-		if err == nil && pr != nil && pr.Head != nil {
+		if err == nil && (pr == nil || pr.Head == nil) {
+			return resp, fmt.Errorf("pull request or head not set")
+		}
+		if err == nil {
 			info = &PullRequestInfo{HeadSHA: pr.Head.Sha, HeadRef: pr.Head.Ref}
 		}
 		return resp, err
@@ -324,8 +355,7 @@ func (p *ForgejoPoster) GetPullRequest() (*PullRequestInfo, error) {
 // WhoAmI returns the authenticated user's login.
 func (p *ForgejoPoster) WhoAmI() (string, error) {
 	var login string
-	rr := &retryResult{}
-	err := p.do("whoami", rr, func() (*forgejo.Response, error) {
+	err := p.do("whoami", func() (*forgejo.Response, error) {
 		user, resp, err := p.client.GetMyUserInfo()
 		if err == nil && user != nil {
 			login = user.UserName

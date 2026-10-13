@@ -94,7 +94,9 @@ func FormatComment(c *review.Comment, commentID string, startLine, endLine int64
 	if badge := BuildBadge(c); badge != "" {
 		b.WriteString(badge + "\n")
 	}
-	b.WriteString(c.Content)
+	// Neutralize HTML-comment terminators so review content cannot close or
+	// forge marker comments used for sticky-summary and incremental matching.
+	b.WriteString(strings.ReplaceAll(c.Content, "-->", "-- >"))
 	if startLine > 0 && endLine > 0 && startLine != endLine {
 		fmt.Fprintf(&b, "\n\n> File `%s` lines %d-%d", c.Path, startLine, endLine)
 	}

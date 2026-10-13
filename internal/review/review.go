@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"unicode/utf8"
 )
 
 // Comment is a single finding from open-code-review.
@@ -90,6 +91,11 @@ func stderrTail(path string) string {
 	s := string(data)
 	if len(s) > stderrTailLimit {
 		s = s[len(s)-stderrTailLimit:]
+		// Advance to the next rune boundary so a split multi-byte rune at
+		// the cut does not emit invalid UTF-8.
+		for len(s) > 0 && !utf8.RuneStart(s[0]) {
+			s = s[1:]
+		}
 	}
 	return "\nOCR stderr log tail:\n" + s
 }

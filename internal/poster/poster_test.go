@@ -1,6 +1,7 @@
 package poster
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +19,7 @@ func newTestForgejo(t *testing.T, handler http.HandlerFunc) (*ForgejoPoster, *sl
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 	rec := &sleepRecorder{}
-	p, err := NewForgejo(srv.URL, "owner", "repo", 42, "tok", rec.sleep)
+	p, err := NewForgejo(context.Background(), srv.URL, "owner", "repo", 42, "tok", rec.sleep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +42,7 @@ func TestRetryOn500ThenSuccess(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		_, _ = fmt.Fprint(w, `{}`)
+		_, _ = fmt.Fprint(w, `{"head": {"sha": "abc123", "ref": "main"}}`)
 	})
 	if _, err := p.GetPullRequest(); err != nil {
 		t.Fatalf("expected success on third attempt, got %v", err)
@@ -95,7 +96,7 @@ func TestRetryOnNetworkError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	srv.Close() // connection refused
 	rec := &sleepRecorder{}
-	p, err := NewForgejo(srv.URL, "owner", "repo", 42, "tok", rec.sleep)
+	p, err := NewForgejo(context.Background(), srv.URL, "owner", "repo", 42, "tok", rec.sleep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,7 +234,7 @@ func TestForgejoGetDiffAndPR(t *testing.T) {
 }
 
 func TestNewForgejoRequiresURL(t *testing.T) {
-	if _, err := NewForgejo("", "o", "r", 1, "t", nil); !errors.Is(err, errInvalidConfig) {
+	if _, err := NewForgejo(context.Background(), "", "o", "r", 1, "t", nil); !errors.Is(err, errInvalidConfig) {
 		t.Fatalf("expected errInvalidConfig, got %v", err)
 	}
 }

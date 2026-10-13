@@ -2,7 +2,7 @@ version: '3'
 
 vars:
   BINARY_NAME: ocr-forgejo
-  MAIN_PKG: ./cmd/ocr-forgejo/main.go
+  MAIN_PKG: ./cmd/ocr-forgejo
 
 tasks:
   default:
@@ -25,7 +25,7 @@ tasks:
       - "go.mod"
       - "go.sum"
     generates:
-      - "{{.BINARY_NAME}}"
+      - "bin/{{.BINARY_NAME}}"
 
   # Test the application
   test:
@@ -62,7 +62,7 @@ tasks:
   clean:
     desc: Clean build artifacts
     cmds:
-      - rm -f {{.BINARY_NAME}}
+      - rm -f bin/{{.BINARY_NAME}}
       - rm -f coverage.out
       - rm -f coverage.html
 
