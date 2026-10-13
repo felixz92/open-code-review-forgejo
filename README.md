@@ -47,6 +47,7 @@ ocr-forgejo [flags] [input.json]
 | `--route-categories` | `""` | Comma-separated categories to route to the summary |
 | `--fail-on-severity` | `""` | Exit non-zero when any finding is at-or-above this severity |
 | `--run-tag` | `<pr>-<head sha>` | Per-run identity for idempotency tags |
+| `--suggestions` | `true` | Include Before/After suggestion blocks in comment bodies |
 
 Exit codes: `0` success, `1` posting failure, `2` usage/config error, `3`
 severity gate tripped.
