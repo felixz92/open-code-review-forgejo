@@ -41,7 +41,7 @@ func TestRetryOn500ThenSuccess(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		fmt.Fprint(w, `{}`)
+		_, _ = fmt.Fprint(w, `{}`)
 	})
 	if _, err := p.GetPullRequest(); err != nil {
 		t.Fatalf("expected success on third attempt, got %v", err)
@@ -59,7 +59,7 @@ func TestNoRetryOn400(t *testing.T) {
 	p, rec := newTestForgejo(t, func(w http.ResponseWriter, r *http.Request) {
 		attempts++
 		w.WriteHeader(http.StatusBadRequest)
-		fmt.Fprint(w, `{"message": "bad"}`)
+		_, _ = fmt.Fprint(w, `{"message": "bad"}`)
 	})
 	_, err := p.GetPullRequest()
 	if err == nil {
@@ -148,11 +148,11 @@ func TestForgejoIssueComments(t *testing.T) {
 	p, _ := newTestForgejo(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/owner/repo/issues/42/comments":
-			fmt.Fprint(w, fmt.Sprintf(`{"id": %d, "body": "x"}`, id))
+			_, _ = fmt.Fprintf(w, `{"id": %d, "body": "x"}`, id)
 		case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/repos/owner/repo/issues/comments/7":
-			fmt.Fprint(w, `{"id": 7, "body": "y"}`)
+			_, _ = fmt.Fprint(w, `{"id": 7, "body": "y"}`)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/owner/repo/issues/42/comments":
-			fmt.Fprint(w, `[{"id": 7, "body": "y"}]`)
+			_, _ = fmt.Fprint(w, `[{"id": 7, "body": "y"}]`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -178,15 +178,15 @@ func TestForgejoReviewFlow(t *testing.T) {
 			if !strings.Contains(string(body), `"body":"`) || strings.Contains(string(body), `"body":""`) {
 				t.Errorf("PENDING creation requires a non-empty body, got %s", body)
 			}
-			fmt.Fprint(w, `{"id": 5, "state": "PENDING"}`)
+			_, _ = fmt.Fprint(w, `{"id": 5, "state": "PENDING"}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/owner/repo/pulls/42/reviews/5":
-			fmt.Fprint(w, `{"id": 5, "state": "COMMENT"}`)
+			_, _ = fmt.Fprint(w, `{"id": 5, "state": "COMMENT"}`)
 		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/repos/owner/repo/pulls/42/reviews/5":
 			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/owner/repo/pulls/42/reviews":
-			fmt.Fprint(w, `[{"id": 5, "state": "PENDING", "user": {"login": "bot"}}]`)
+			_, _ = fmt.Fprint(w, `[{"id": 5, "state": "PENDING", "user": {"login": "bot"}}]`)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/owner/repo/pulls/42/reviews/5/comments":
-			fmt.Fprint(w, `[{"id": 1, "body": "<!-- ocr-1-a -->", "path": "a.go", "position": 5}]`)
+			_, _ = fmt.Fprint(w, `[{"id": 1, "body": "<!-- ocr-1-a -->", "path": "a.go", "position": 5}]`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -215,9 +215,9 @@ func TestForgejoGetDiffAndPR(t *testing.T) {
 	p, _ := newTestForgejo(t, func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/repos/owner/repo/pulls/42.diff":
-			fmt.Fprint(w, "diff --git a/a.go b/a.go")
+			_, _ = fmt.Fprint(w, "diff --git a/a.go b/a.go")
 		case "/api/v1/repos/owner/repo/pulls/42":
-			fmt.Fprint(w, `{"head": {"sha": "abc123", "ref": "feature"}}`)
+			_, _ = fmt.Fprint(w, `{"head": {"sha": "abc123", "ref": "feature"}}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
