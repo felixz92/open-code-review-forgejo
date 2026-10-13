@@ -6,13 +6,15 @@ suggestions.
 
 ## Repo Overview
 
-Standalone Go mock servers for the TPL deployment ecosystem: SCM (GitHub
-Enterprise / Bitbucket Server), Harbor registry, and Kubernetes/Tekton API
-doubles for local development and testing.
+`ocr-forgejo`: a Go CLI that reads `ocr review --format json` output from
+open-code-review (`ocr`) and publishes it to a Forgejo pull request as a
+review with inline comments plus a sticky summary. Built for use from
+Argo Workflows.
 
-Three **nested Go modules** (`scm/`, `harbor/`, `k8s/`), each with its own
-`go.mod`. There is **no root `go.mod`** — run Go commands from inside the
-module directory, or use the Taskfile targets which handle this for you.
+This is a **single Go module at the repo root** (`go.mod`), with the binary
+entrypoint in `cmd/ocr-forgejo`. Implementation packages live under
+`internal/` (`review`, `format`, `policy`, `incremental`, `diffinv`,
+`poster`, `publish`). OpenSpec workflow artifacts live under `openspec/`.
 
 ## Mandatory: Serena MCP for all code changes
 
@@ -38,7 +40,7 @@ Rules for code work:
 - **After edits**: run `serena_get_diagnostics_for_file` on touched Go files
   to catch LSP-reported issues early.
 
-Shell, Read, Grep, and Glob remain fine for non-code files (Taskfile.yml,
+Shell, Read, Grep, and Glob remain fine for non-code files (Taskfile.yaml,
 YAML, markdown), running builds/tests/linters, and git operations.
 
 ## Mandatory: superpowers skills
@@ -68,45 +70,51 @@ mandatory whenever the task touches the OpenSpec workflow (see `openspec/`).
 
 ## Commands
 
-Use the Taskfile — it iterates over all three modules for you:
+Go commands run from the repo root (single module — no per-module juggling
+needed). Prefer the Taskfile targets:
 
 | Task | What it does |
 |------|--------------|
-| `task check` | fmt-check + vet + lint + test across all modules |
-| `task test` | `go test ./...` in all modules |
-| `task lint` | `golangci-lint run ./...` in all modules |
-| `task vet` | `go vet ./...` in all modules |
-| `task fmt` | gofmt all modules (`task fmt-check` verifies only) |
-| `task tidy` | `go mod tidy` in all modules |
-| `task run:scm` | Run SCM mock (ports 8081 GitHub, 8082 Bitbucket) |
-| `task run:harbor` | Run Harbor mock (ports 8083 nonprod, 8084 prod) |
-| `task run:k8s` | Run K8s/Tekton mock (port 16443, downloads envtest assets first) |
-| `task envtest` | `setup-envtest use 1.35.0 --bin-dir ./bin` for the k8s mock |
+| `task build` | `go build` the binary (`orc-forgejo` per `Taskfile.yaml`) |
+| `task test` | `go test ./...` with coverage profile |
+| `task test-coverage` | Tests plus HTML coverage report |
+| `task lint` | `golangci-lint run` |
+| `task vet` | `go vet ./...` |
+| `task fmt` | `go fmt ./...` |
+| `task deps` | `go mod tidy` |
+| `task clean` | Remove binary and coverage artifacts |
 
-Per-module alternative: `cd <module> && go test ./...`. Never run bare
-`go build`/`go test` at the repo root — it fails without a root `go.mod`.
+There is **no `task check` aggregate** in this repo; run `task fmt`, `task
+vet`, `task lint`, and `task test` individually (or `go test ./...` etc.
+directly).
 
 ## Layout & Conventions
 
-| Module | Path | Import path |
-|--------|------|-------------|
-| SCM | `scm/` | `forgejo.zippelf.de/felix/tpl-go-mocks/scm` |
-| Harbor | `harbor/` | `forgejo.zippelf.de/felix/tpl-go-mocks/harbor` |
-| K8s | `k8s/` | `forgejo.zippelf.de/felix/tpl-go-mocks/k8s` |
+| What | Path |
+|------|------|
+| Binary entrypoint | `cmd/ocr-forgejo` |
+| Implementation packages | `internal/review`, `internal/format`, `internal/policy`, `internal/incremental`, `internal/diffinv`, `internal/poster`, `internal/publish` |
+| Module path | `github.com/felixz92/open-code-review-forgejo` |
+| ADRs | `docs/adr/` |
+| OpenSpec change | `openspec/changes/add-ocr-forgejo-cli/` |
 
-- SCM module entrypoints: `scm/cmd/mockscm`; Harbor: `harbor/cmd/mockharbor`;
-  K8s: `k8s/cmd/mockk8s`.
-- The k8s mock downloads Tekton CRDs from the network at startup; its envtest
-  binaries default to `<repo>/bin/k8s/1.35.0-<os>-<arch>`.
-- Dependencies are deliberately minimal: Harbor is stdlib-only at runtime, SCM
-  uses `onsi/gomega` test helpers compiled into the package. Do not add
-  heavyweight dependencies without a strong reason.
+- Forgejo SDK: `codeberg.org/mvdkleijn/forgejo-sdk/forgejo/v3`. Keep
+  dependencies minimal; do not add heavyweight dependencies without a strong
+  reason.
+- Auth is via the `GIT_TOKEN` env var (injected by Argo Workflows); targeting
+  is always via explicit flags (`--url`, `--repo owner/name`, `--pr <index>`).
+  No CI-env auto-detection.
+- Posting model: one Forgejo review per run (single-review posting, see
+  `docs/adr/0001-single-review-posting.md`), sticky summary issue comment
+  with the `<!-- ocr-summary -->` marker.
+- Consumed input format is the `ocr review --format json` schema — do not
+  change parsing in a way that breaks that contract.
 
 ## Verification Rule
 
 Before declaring any code change done:
 
-1. `task check` must pass (format check, vet, lint, tests across all modules).
+1. `task fmt`, `task vet`, `task lint`, and `task test` must all pass.
 2. `serena_get_diagnostics_for_file` on every touched Go file must report no
    errors.
 3. Never claim tests pass without having run them in this session.
