@@ -73,6 +73,9 @@ func New(diff []byte) (*Inventory, error) {
 		case strings.HasPrefix(line, "diff --git "):
 			flush()
 			curFile = parseGitPath(line)
+			if curFile != "" {
+				inv.Files[curFile] = nil
+			}
 		case hunkHeader.MatchString(line):
 			flush()
 			m := hunkHeader.FindStringSubmatch(line)
@@ -108,8 +111,13 @@ func New(diff []byte) (*Inventory, error) {
 	if sc.Err() != nil {
 		return nil, fmt.Errorf("scan diff: %w", sc.Err())
 	}
-	if !sawHunk || curFile == "" && len(inv.Files) == 0 {
-		return nil, errNotADiff
+	if !sawHunk {
+		if len(inv.Files) == 0 {
+			return nil, errNotADiff
+		}
+		// Files are present but no hunk anywhere (e.g. empty-file additions
+		// only): accept as an incomplete inventory.
+		inv.Complete = false
 	}
 	return inv, nil
 }
