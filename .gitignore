@@ -40,5 +40,4 @@ main
 mockk8s-server
 mockkubeconfig*
 # project
-ocr-forgejo
 .ocr/

@@ -2,6 +2,7 @@ version: '3'
 
 vars:
   BINARY_NAME: orc-forgejo
+  MAIN_PKG: ./cmd/ocr-forgejo/main.go
 
 tasks:
   default:
@@ -18,7 +19,7 @@ tasks:
   build:
     desc: Build the application
     cmds:
-      - go build -o {{.BINARY_NAME}} {{.MAIN_PKG}}
+      - go build -o bin/{{.BINARY_NAME}} {{.MAIN_PKG}}
     sources:
       - "**/*.go"
       - "go.mod"

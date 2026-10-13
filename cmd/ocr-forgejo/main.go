@@ -1,0 +1,180 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"log"
+	"os"
+	"strings"
+
+	"github.com/felixz92/open-code-review-forgejo/internal/policy"
+	"github.com/felixz92/open-code-review-forgejo/internal/poster"
+	"github.com/felixz92/open-code-review-forgejo/internal/publish"
+	"github.com/felixz92/open-code-review-forgejo/internal/review"
+)
+
+// Config holds the resolved CLI configuration.
+type Config struct {
+	URL                      string
+	Owner                    string
+	Repo                     string
+	PRIndex                  int64
+	Token                    string
+	InputPath                string
+	StderrLogPath            string
+	StatsFilePath            string
+	DryRun                   bool
+	StickySummary            bool
+	Incremental              bool
+	IncrementalOverlapThresh float64
+	RouteSeverityBelow       string
+	RouteCategories          string
+	FailOnSeverity           string
+	RunTag                   string
+}
+
+const (
+	defaultStatsFile = ".ocr/ocr-stats.env"
+	defaultStderrLog = ".ocr/ocr-stderr.log"
+	defaultInputPath = ".ocr/ocr-result.json"
+)
+
+// ParseFlags parses command line flags and arguments into a Config.
+func ParseFlags(args []string) (*Config, error) {
+	fs := flag.NewFlagSet("ocr-forgejo", flag.ContinueOnError)
+	cfg := &Config{}
+	fs.StringVar(&cfg.URL, "url", "", "Forgejo base URL (required)")
+	fs.StringVar(&cfg.Repo, "repo", "", "repository as owner/name (required)")
+	fs.Int64Var(&cfg.PRIndex, "pr", 0, "pull request index (required)")
+	fs.StringVar(&cfg.Token, "token", "", "API token (default: GIT_TOKEN env)")
+	fs.StringVar(&cfg.InputPath, "input", defaultInputPath, "review result JSON path")
+	fs.StringVar(&cfg.StderrLogPath, "stderr-log", defaultStderrLog, "OCR stderr log path, read on parse failure")
+	fs.StringVar(&cfg.StatsFilePath, "stats-file", defaultStatsFile, "dotenv output path for posting stats")
+	fs.BoolVar(&cfg.DryRun, "dry-run", false, "print review comments and summary instead of posting")
+	fs.BoolVar(&cfg.StickySummary, "sticky-summary", true, "update the summary comment in place across runs")
+	fs.BoolVar(&cfg.Incremental, "incremental", false, "skip comments overlapping prior bot review comments")
+	fs.Float64Var(&cfg.IncrementalOverlapThresh, "incremental-overlap-threshold", 0.6, "IoU threshold for incremental overlap (0 < x <= 1)")
+	fs.StringVar(&cfg.RouteSeverityBelow, "route-severity-below", "", "route findings at-or-below this severity to the summary")
+	fs.StringVar(&cfg.RouteCategories, "route-categories", "", "comma-separated categories to route to the summary")
+	fs.StringVar(&cfg.FailOnSeverity, "fail-on-severity", "", "exit non-zero when any comment is at-or-above this severity")
+	fs.StringVar(&cfg.RunTag, "run-tag", "", "per-run identity for idempotency tags (default: <pr>-<head sha>)")
+
+	if err := fs.Parse(args); err != nil {
+		return nil, err
+	}
+	if fs.NArg() > 1 {
+		return nil, fmt.Errorf("unexpected extra arguments: %v", fs.Args()[1:])
+	}
+	if fs.NArg() == 1 {
+		cfg.InputPath = fs.Arg(0)
+	}
+	if err := cfg.validate(fs); err != nil {
+		return nil, err
+	}
+	if cfg.Token == "" {
+		cfg.Token = os.Getenv("GIT_TOKEN")
+	}
+	return cfg, nil
+}
+
+func (c *Config) validate(fs *flag.FlagSet) error {
+	var missing []string
+	if c.URL == "" {
+		missing = append(missing, "--url")
+	}
+	if c.Repo == "" {
+		missing = append(missing, "--repo")
+	}
+	if c.PRIndex == 0 {
+		missing = append(missing, "--pr")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required flag(s): %s", strings.Join(missing, ", "))
+	}
+	parts := strings.SplitN(c.Repo, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("--repo must be owner/name, got %q", c.Repo)
+	}
+	return nil
+}
+
+func main() {
+	cfg, err := ParseFlags(os.Args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(2)
+	}
+	if cfg.Token == "" && !cfg.DryRun {
+		fmt.Fprintln(os.Stderr, "error: GIT_TOKEN is not set")
+		os.Exit(2)
+	}
+	os.Exit(run(cfg))
+}
+
+func run(cfg *Config) int {
+	var p poster.Poster
+	if cfg.DryRun {
+		p = poster.NewDryRun()
+	} else {
+		fp, err := poster.NewForgejo(cfg.URL, cfg.Owner, cfg.Repo, cfg.PRIndex, cfg.Token, nil)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		p = fp
+	}
+
+	result, err := review.Load(cfg.InputPath, review.WithStderrLog(cfg.StderrLogPath))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		_ = publish.WriteStatsFile(cfg.StatsFilePath, &publish.Stats{})
+		return 1
+	}
+
+	headSHA := ""
+	if cfg.RunTag == "" {
+		// Run tag from PR index + reviewed head SHA so reruns of the same
+		// revision share identity; unknown head falls back to the PR index.
+		headSHA = result.Manifest.Input.ResolvedHead
+		if headSHA == "" {
+			headSHA = "unknown"
+		}
+	}
+	runTag := cfg.RunTag
+	if runTag == "" {
+		runTag = fmt.Sprintf("%d-%s", cfg.PRIndex, shortSHA(headSHA))
+	}
+
+	commitID := result.Manifest.Input.ResolvedHead
+	stats, err := publish.Publish(result, p, publish.Options{
+		RunTag:        runTag,
+		Sticky:        cfg.StickySummary,
+		Incremental:   cfg.Incremental,
+		OverlapThresh: cfg.IncrementalOverlapThresh,
+		Route:         policy.Build(cfg.RouteSeverityBelow, cfg.RouteCategories),
+		CommitID:      commitID,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		_ = publish.WriteStatsFile(cfg.StatsFilePath, stats)
+		return 1
+	}
+	if err := publish.WriteStatsFile(cfg.StatsFilePath, stats); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not write stats file:", err)
+	}
+	log.Printf("posted %d/%d inline, %d summary, %d routed, %d skipped, %d failed (total %d)",
+		stats.Inline, stats.Total, stats.Summary, stats.Routed, stats.Skipped, stats.Failed, stats.Total)
+
+	if publish.ShouldFailOnSeverity(result, cfg.FailOnSeverity) {
+		fmt.Fprintf(os.Stderr, "error: severity threshold %q exceeded\n", cfg.FailOnSeverity)
+		return 3
+	}
+	return 0
+}
+
+func shortSHA(sha string) string {
+	if len(sha) > 8 {
+		return sha[:8]
+	}
+	return sha
+}
