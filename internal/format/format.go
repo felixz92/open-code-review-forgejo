@@ -91,7 +91,9 @@ func SuggestionBlocks(c *review.Comment) string {
 // tag (for idempotent matching and incremental detection), the badge, the
 // content, and the stated line span when the comment covers multiple lines.
 // When withSuggestions is true, suggestion blocks are appended when the
-// comment carries suggestion code.
+// comment carries suggestion code. Inline callers must keep this false: the
+// diff-validity gating for inline suggestions lives in publish, which appends
+// SuggestionBlocks itself after the pre-check; passing true here bypasses it.
 func FormatComment(c *review.Comment, commentID string, startLine, endLine int64, withSuggestions bool) string {
 	var b strings.Builder
 	if commentID != "" {
