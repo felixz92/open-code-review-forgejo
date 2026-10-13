@@ -28,8 +28,7 @@ inline comments plus a sticky summary. Designed to run from Argo Workflows.
 ocr-forgejo [flags] [input.json]
 ```
 
-`input.json` defaults to `.ocr/ocr-result.json`. Flags must precede the
-positional argument.
+`input.json` defaults to `.ocr/ocr-result.json`. Flags may appear before or after the positional argument.
 
 | Flag | Default | Description |
 |------|---------|-------------|
