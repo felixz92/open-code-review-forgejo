@@ -51,6 +51,14 @@ ocr-forgejo [flags] [input.json]
 Exit codes: `0` success, `1` posting failure, `2` usage/config error, `3`
 severity gate tripped.
 
+> **Recommendation for CI pipelines:** enable `--incremental` in the standard
+> PR review pipeline (every push to a PR). It skips findings that overlap
+> comments the bot already posted, so repeated runs don't pile up duplicate
+> inline comments; if prior activity can't be read, the filter silently
+> disables for that run and everything is posted. Leave it off for one-off or
+> differently-configured re-reviews, where overlap is not a reliable signal
+> that a finding is a duplicate.
+
 ### Stats file
 
 Always written (zero-filled on early exit):
