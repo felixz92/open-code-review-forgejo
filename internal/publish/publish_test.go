@@ -422,3 +422,20 @@ func TestPublishSuggestionsDisabled(t *testing.T) {
 		t.Fatalf("suggestions off must omit blocks in fallback:\n%s", f2.editedSummary[55])
 	}
 }
+
+func TestPublishSuggestionsTrueWithoutSuggestionCode(t *testing.T) {
+	f := newFake()
+	f.diff = diffFixture
+	r := result(review.Comment{Path: "a.go", StartLine: 2, EndLine: 2, Content: "x", Category: "bug", Severity: "low"})
+	stats, err := Publish(r, f, Options{RunTag: "t", CommitID: "s", Suggestions: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Inline != 1 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	body := f.createdComments[0].Body
+	if strings.Contains(body, "**After:**") || strings.Contains(body, "**Before:**") || strings.Contains(body, "<details>") {
+		t.Fatalf("comment without suggestion_code must not gain empty blocks:\n%s", body)
+	}
+}
