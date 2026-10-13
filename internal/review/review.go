@@ -1,0 +1,95 @@
+// Package review parses the JSON output of `ocr review --format json`.
+package review
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+)
+
+// Comment is a single finding from open-code-review.
+type Comment struct {
+	Path           string `json:"path"`
+	StartLine      int64  `json:"start_line"`
+	EndLine        int64  `json:"end_line"`
+	Content        string `json:"content"`
+	SuggestionCode string `json:"suggestion_code"`
+	ExistingCode   string `json:"existing_code"`
+	Category       string `json:"category"`
+	Severity       string `json:"severity"`
+}
+
+// Warning is a non-fatal issue reported during the review run.
+type Warning struct {
+	File    string `json:"file"`
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// ManifestInput carries the resolved SHAs OCR actually reviewed.
+type ManifestInput struct {
+	ResolvedHead string `json:"resolved_head"`
+	ResolvedBase string `json:"resolved_base"`
+}
+
+// Manifest is the run manifest embedded in the result.
+type Manifest struct {
+	Input ManifestInput `json:"input"`
+}
+
+// Result is the parsed `ocr review --format json` document.
+type Result struct {
+	Comments []Comment `json:"comments"`
+	Warnings []Warning `json:"warnings"`
+	Message  string    `json:"message"`
+	Manifest Manifest  `json:"manifest"`
+}
+
+const stderrTailLimit = 2000
+
+// Option customizes loading.
+type Option func(*loader)
+
+type loader struct {
+	stderrLogPath string
+}
+
+// WithStderrLog points the loader at the OCR stderr log, whose tail is
+// included in the error when the result JSON cannot be parsed.
+func WithStderrLog(path string) Option {
+	return func(l *loader) { l.stderrLogPath = path }
+}
+
+// Load reads and parses the review result JSON at path.
+func Load(path string, opts ...Option) (*Result, error) {
+	l := &loader{}
+	for _, o := range opts {
+		o(l)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read review result %s: %w", path, err)
+	}
+	var r Result
+	if err := json.Unmarshal(data, &r); err != nil {
+		return nil, fmt.Errorf("parse review result %s: %w%s", path, err, stderrTail(l.stderrLogPath))
+	}
+	return &r, nil
+}
+
+// stderrTail returns a human-readable suffix with the last lines of the
+// stderr log, or "" when the log is absent or unreadable.
+func stderrTail(path string) string {
+	if path == "" {
+		return ""
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	s := string(data)
+	if len(s) > stderrTailLimit {
+		s = s[len(s)-stderrTailLimit:]
+	}
+	return "\nOCR stderr log tail:\n" + s
+}
