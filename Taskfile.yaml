@@ -1,7 +1,7 @@
 version: '3'
 
 vars:
-  BINARY_NAME: orc-forgejo
+  BINARY_NAME: ocr-forgejo
   MAIN_PKG: ./cmd/ocr-forgejo/main.go
 
 tasks:
