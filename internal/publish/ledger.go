@@ -20,6 +20,11 @@ const maxSnippetRunes = 200
 // comment terminators so content cannot forge or truncate the markers
 // framing the ledger block (same neutralization as inline comment bodies).
 func snippet(content string) string {
+	// A quoted ledger start marker inside the payload would re-anchor
+	// StripLedger below the real block and silently reset tracking
+	// state; a quoted terminators pair would splice the block. Both are
+	// neutralized with a harmless space injection.
+	content = strings.ReplaceAll(content, format.LedgerStartMarker, "<!- - ocr-ledger ")
 	content = strings.ReplaceAll(content, "-->", "-- >")
 	runes := []rune(content)
 	if len(runes) <= maxSnippetRunes {
