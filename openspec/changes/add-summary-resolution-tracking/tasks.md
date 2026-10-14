@@ -17,6 +17,10 @@
 - [x] 3.2 Handle the clean-run cases: non-empty open ledger resolves all and reports resolutions (not a bare "looks good to me"); empty ledger keeps existing body; unit tests for both; run `go test ./internal/publish`
 - [x] 3.3 Ensure tracking-disabled path strips any legacy ledger block and produces byte-identical classic summary; unit test; run `go test ./internal/publish`
 
+Note: concurrent runs on the same PR race on the summary body; Argo
+serializes per-PR runs today, so last-writer-wins is accepted (design
+risk note). No locking mechanism is added.
+
 ## 4. CLI flag, stats, and posting flow
 
 - [x] 4.1 Add `--resolution-tracking` flag (default false) in `cmd/ocr-forgejo` and thread it into `publish.Options`; verify flag parse via `go build` and a CLI smoke test

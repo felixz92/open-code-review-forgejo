@@ -418,6 +418,57 @@ func TestPublishRoutedFindingKeepsPriorLedgerEntryOpen(t *testing.T) {
 	}
 }
 
+func TestPublishPrecheckDropsAndSubmitFailuresKeepPriorEntriesOpen(t *testing.T) {
+	t.Run("diff pre-check drop", func(t *testing.T) {
+		prior := &format.Ledger{
+			Version: format.LedgerVersion,
+			Open:    []format.LedgerEntry{{Path: "b.go", StartLine: 1, EndLine: 1, FirstSeen: "run-1"}},
+		}
+		f := newFake()
+		f.issueComments = []poster.IssueCommentInfo{{ID: 71, Body: format.SummaryMarker + "\nold\n" + format.EncodeLedger(prior)}}
+		// The finding sits in b.go, which no longer exists in the diff
+		// (only a.go changed): the pre-check drops it as out of diff.
+		f.diff = []byte("diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,2 @@\n keep()\n-removed()\n+added()\n")
+		stats, err := Publish(result(c("b.go", 1, 1, "high")), f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stats.Failed != 1 || stats.Resolved != 0 {
+			t.Fatalf("dropped candidate must keep its entry open, failed=%d resolved=%d", stats.Failed, stats.Resolved)
+		}
+		_, l, found, err := format.StripLedger(finalSummaryBody(f))
+		if err != nil || !found {
+			t.Fatalf("summary must embed the ledger, found=%v err=%v", found, err)
+		}
+		if len(l.Open) != 1 || l.Open[0].StartLine != 1 || l.Open[0].FirstSeen != "run-1" {
+			t.Fatalf("prior entry must remain open untouched, got %+v", l.Open)
+		}
+	})
+	t.Run("review submit failure", func(t *testing.T) {
+		prior := &format.Ledger{
+			Version: format.LedgerVersion,
+			Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 1, EndLine: 1, FirstSeen: "run-1"}},
+		}
+		f := newFake()
+		f.issueComments = []poster.IssueCommentInfo{{ID: 71, Body: format.SummaryMarker + "\nold\n" + format.EncodeLedger(prior)}}
+		f.createErr = errors.New("review boom")
+		stats, err := Publish(result(c("a.go", 1, 1, "low")), f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stats.Failed != 1 || stats.Resolved != 0 {
+			t.Fatalf("submit-failed candidate must keep its entry open, failed=%d resolved=%d", stats.Failed, stats.Resolved)
+		}
+		_, l, found, err := format.StripLedger(finalSummaryBody(f))
+		if err != nil || !found {
+			t.Fatalf("summary must embed the ledger, found=%v err=%v", found, err)
+		}
+		if len(l.Open) != 1 || l.Open[0].FirstSeen != "run-1" {
+			t.Fatalf("prior entry must remain open untouched, got %+v", l.Open)
+		}
+	})
+}
+
 func TestPublishUnpostableCommentCategoriesNeverCreateLedgerEntries(t *testing.T) {
 	t.Run("failed", func(t *testing.T) {
 		f := newFake()

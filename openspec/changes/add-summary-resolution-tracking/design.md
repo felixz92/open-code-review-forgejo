@@ -53,6 +53,7 @@ An entry is created only after the review submit succeeds, from the posted set. 
 Resolved entries keep a resolved-at run tag and date, capped at the 20 most recent (constant, not configurable for now). Open entries are unbounded — a pathological PR with hundreds of unfixed findings renders a long summary, which is honest reporting.
 
 - *Why cap*: the summary is rewritten wholesale each run; without a cap it grows forever on long-lived PRs. 20 covers typical review horizons.
+- *Rendering scope*: the summary's resolved section lists the findings resolved during the current run only; older resolutions stay in the ledger state (visible in the hidden JSON block) without re-rendering, so the visible resolution story stays tied to recent progression.
 - *Alternative*: prune by age/runs — more knobs, no added value yet.
 
 ### D6: Failure semantics — fail open, never block posting

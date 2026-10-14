@@ -25,14 +25,6 @@ func snippet(content string) string {
 	return string(runes[:maxSnippetRunes]) + "…"
 }
 
-// mergeLedger folds the current run's inline findings into the prior ledger
-// and returns the merged ledger plus the number of open entries this run
-// resolved. Matching reuses the incremental span semantics: posted findings
-// (plus incrementally skipped ones, which were already posted by a prior run
-// and are still live findings) keep matching entries open; findings that
-// match no entry are added as new open entries; open entries matched by no
-// current finding move to the resolved list with the resolution stamp
-// (design D2/D3). The resolved list is pruned to MaxResolvedEntries.
 // mergeLedger folds the current run's inline candidates into the prior
 // ledger and returns the merged ledger plus the entries this run resolved
 // (design D2/D3; the spec's "fixed finding is marked resolved" scenario keys
