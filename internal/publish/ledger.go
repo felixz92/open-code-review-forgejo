@@ -115,6 +115,11 @@ func loadLedger(p poster.Poster, opts Options) *format.Ledger {
 	}
 	needle := format.SummaryMarker
 	if !opts.Sticky {
+		// Non-sticky summaries are not durable across runs: the per-run
+		// needle only matches a summary written for this exact run tag
+		// (PR + head SHA), so cross-run state never loads. The CLI
+		// therefore rejects --resolution-tracking combined with
+		// --sticky-summary=false instead of silently tracking nothing.
 		needle = fmt.Sprintf(format.PerRunMarkerFmt, opts.RunTag)
 	}
 	for i := len(comments) - 1; i >= 0; i-- {

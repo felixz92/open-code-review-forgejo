@@ -14,10 +14,12 @@ import (
 // (Forgejo has no conversation-resolve API; the summary is the only durable,
 // bot-writable state on a pull request).
 const (
-	// LedgerStartMarker opens the ledger block in a summary body.
-	LedgerStartMarker = "<!-- ocr-ledger -->"
-	// LedgerEndMarker closes the ledger block in a summary body.
-	LedgerEndMarker = "<!-- /ocr-ledger -->"
+	// LedgerStartMarker opens the ledger block: a single self-contained
+	// HTML comment whose JSON payload stays inside the comment so the
+	// block is invisible in rendered Markdown.
+	LedgerStartMarker = "<!-- ocr-ledger "
+	// LedgerEndMarker closes the ledger block on the same line.
+	LedgerEndMarker = " -->"
 	// LedgerVersion is the schema version this build writes and reads.
 	LedgerVersion = 1
 	// MaxResolvedEntries bounds the retained resolved entries: the cap keeps
@@ -47,15 +49,18 @@ type Ledger struct {
 	Resolved []LedgerEntry `json:"resolved,omitempty"`
 }
 
-// EncodeLedger serializes the ledger as the marker-delimited block suitable
-// for embedding in a summary body.
+// EncodeLedger serializes the ledger as a single self-contained HTML comment
+// suitable for embedding in a summary body. The payload must stay inside the
+// comment: a start marker that closes itself would render the JSON as
+// visible Markdown text. Ledger entry content is neutralized upstream
+// (snippet), so the payload cannot contain the end marker.
 func EncodeLedger(l *Ledger) string {
 	payload, err := json.Marshal(l)
 	if err != nil {
 		// Struct-only payload: marshalling cannot fail.
 		return ""
 	}
-	return LedgerStartMarker + "\n" + string(payload) + "\n" + LedgerEndMarker
+	return LedgerStartMarker + string(payload) + LedgerEndMarker
 }
 
 // errTruncatedLedger is returned when a ledger block has no end marker.
@@ -66,17 +71,24 @@ var errTruncatedLedger = errors.New("ledger block is truncated: missing end mark
 // ledger, and whether the block was present. A present-but-malformed block
 // yields an error; a body without a block returns found=false and no error.
 func StripLedger(body string) (string, *Ledger, bool, error) {
-	i := strings.Index(body, LedgerStartMarker)
+	// The genuine block is always the last ledger comment in the body
+	// (finalizeBody/trackedNoIssuesBody append it after all rendered
+	// sections), and ledger payloads neutralize comment terminators while
+	// summary-rendered content does not. Anchor at the LAST start marker
+	// so a ledger marker quoted in summary content cannot relocate the
+	// block start.
+	i := strings.LastIndex(body, LedgerStartMarker)
 	if i < 0 {
 		return body, nil, false, nil
 	}
-	j := strings.Index(body[i:], LedgerEndMarker)
+	rest := body[i+len(LedgerStartMarker):]
+	j := strings.Index(rest, LedgerEndMarker)
 	if j < 0 {
 		return "", nil, false, errTruncatedLedger
 	}
-	j += i + len(LedgerEndMarker)
+	payload := rest[:j]
+	after := strings.TrimLeft(rest[j+len(LedgerEndMarker):], "\n")
 	clean := strings.TrimRight(body[:i], "\n")
-	after := strings.TrimLeft(body[j:], "\n")
 	switch {
 	case after == "":
 		// Block was at the very end: keep only the text before it.
@@ -85,7 +97,6 @@ func StripLedger(body string) (string, *Ledger, bool, error) {
 	default:
 		clean = clean + "\n\n" + after
 	}
-	payload := strings.Trim(body[i+len(LedgerStartMarker):j-len(LedgerEndMarker)], "\n")
 	l, err := decodeLedger(payload)
 	if err != nil {
 		return "", nil, false, err

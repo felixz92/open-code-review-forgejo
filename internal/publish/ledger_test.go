@@ -318,7 +318,9 @@ func TestPublishTrackingDisabledStripsLegacyLedgerAndMatchesClassicBody(t *testi
 	if b1 == "" || b2 == "" {
 		t.Fatalf("both runs must produce a final summary: %q / %q", b1, b2)
 	}
-	if strings.Contains(b1, format.LedgerStartMarker) || strings.Contains(b1, format.LedgerEndMarker) {
+	// LedgerEndMarker (" -->") also terminates our own summary markers, so
+	// only the ledger start marker is an unambiguous ledger signal here.
+	if strings.Contains(b1, format.LedgerStartMarker) {
 		t.Fatalf("tracking-off summary must strip the legacy ledger block, got %q", b1)
 	}
 	if b1 != b2 {

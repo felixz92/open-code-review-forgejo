@@ -138,6 +138,9 @@ func (c *Config) validate(fs *flag.FlagSet) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required flag(s): %s", strings.Join(missing, ", "))
 	}
+	if c.ResolutionTracking && !c.StickySummary {
+		return fmt.Errorf("--resolution-tracking requires the sticky summary: cross-run ledger state lives in the sticky summary body")
+	}
 	if (c.Incremental || c.ResolutionTracking) && (c.IncrementalOverlapThresh <= 0 || c.IncrementalOverlapThresh >= 1) {
 		return fmt.Errorf("--incremental-overlap-threshold must be in (0, 1), got %v", c.IncrementalOverlapThresh)
 	}
