@@ -38,4 +38,4 @@ All runs against the fixture above; two issues found and fixed during smoke:
 - Run without `--incremental`: clean pre-check, `2/3 inline` posted, no-line comment in summary, `0 failed`, no duplicate summary.
 - Run with `--incremental`: `0/3 inline`, `2 skipped` (both previously posted comments overlap), summary notes the skip.
 - Sticky summary confirmed updated in place across runs (no second summary comment, no duplicate reviews).
-- Dry-run and severity gating verified separately (exit 3 on `--fail-on-severity low`).
+- Dry-run verified separately (no posting; the computed review state is printed).

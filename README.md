@@ -7,7 +7,9 @@ inline comments plus a sticky summary. Designed to run from Argo Workflows.
 ## How it works
 
 - One **review per run**: all anchorable comments are batched into a single
-  Forgejo review (pending) and submitted with `COMMENT` (see
+  Forgejo review (pending) and submitted with the computed review state:
+  `APPROVED` on clean runs, `REQUEST_CHANGES` when blocking findings post,
+  `COMMENT` when posting failed (see
   [ADR 0001](docs/adr/0001-single-review-posting.md)).
 - Comments anchor at their `end_line`; multiline spans are stated in the body.
 - A **sticky summary** issue comment (`<!-- ocr-summary -->` marker) is created
@@ -20,7 +22,11 @@ inline comments plus a sticky summary. Designed to run from Argo Workflows.
   submitting; provably out-of-diff comments land in the summary with a reason.
 - Stale **pending** reviews of the bot are deleted before posting, so
   interrupted runs never accumulate.
-- Writes a **stats dotenv file** and can gate the job on severity.
+- Writes a **stats dotenv file**. Clean runs additionally submit an `APPROVED`
+  review so the PR review status reflects the verdict.
+- **Fail-safe verdict**: unknown approval thresholds and severities that are
+  not on the known ladder (`low`/`medium`/`high`/`critical`) always block
+  approval.
 
 ## Usage
 
@@ -45,12 +51,11 @@ ocr-forgejo [flags] [input.json]
 | `--incremental-overlap-threshold` | `0.6` | IoU threshold for the overlap test (strictly greater) |
 | `--route-severity-below` | `""` | Route findings at-or-below this severity to the summary |
 | `--route-categories` | `""` | Comma-separated categories to route to the summary |
-| `--fail-on-severity` | `""` | Exit non-zero when any finding is at-or-above this severity |
+| `--approve-below` | `low` | Findings above this severity block approval (request changes); the named severity and below approve |
 | `--run-tag` | `<pr>-<head sha>` | Per-run identity for idempotency tags |
 | `--suggestions` | `true` | Include Before/After suggestion blocks in comment bodies |
 
-Exit codes: `0` success, `1` posting failure, `2` usage/config error, `3`
-severity gate tripped.
+Exit codes: `0` success, `1` posting failure, `2` usage/config error.
 
 > **Recommendation for CI pipelines:** enable `--incremental` in the standard
 > PR review pipeline (every push to a PR). It skips findings that overlap
@@ -107,8 +112,6 @@ spec:
           - --pr
           - "42"
           - --incremental
-          - --fail-on-severity
-          - critical
         env:
           - name: GIT_TOKEN
             valueFrom:

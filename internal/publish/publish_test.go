@@ -330,6 +330,7 @@ func TestPublishNoCommentsCreationFailureLogsAndContinues(t *testing.T) {
 
 func TestPublishNoCommentsSubmitFailureRecordsComment(t *testing.T) {
 	f := newFake()
+	f.headSHA = "head123"
 	f.submitErr = fmt.Errorf("403: self-approval refused")
 	stats, err := Publish(result(), f, Options{RunTag: "t"})
 	if err != nil {
@@ -338,11 +339,42 @@ func TestPublishNoCommentsSubmitFailureRecordsComment(t *testing.T) {
 	if stats.State != StateComment {
 		t.Fatalf("stats.State = %q, want COMMENT after submit failure", stats.State)
 	}
+	if len(f.submitted) != 1 {
+		t.Fatalf("approval must be attempted before failing, submitted=%v", f.submitted)
+	}
 	if len(f.createdSummary) != 1 || !strings.Contains(f.createdSummary[0], "✅") {
 		t.Fatalf("LGTM summary must still publish, got %v", f.createdSummary)
 	}
-	if len(f.deletedReviews) != 0 {
-		t.Fatalf("no pending review to delete: %v", f.deletedReviews)
+	// The created pending review is cleaned up on submit refusal, mirroring
+	// the findings path: a persistent refusal must not accumulate orphans.
+	if len(f.deletedReviews) != 1 || f.deletedReviews[0] != 101 {
+		t.Fatalf("pending review must be deleted after submit failure, got %v", f.deletedReviews)
+	}
+}
+
+func TestPublishNoCommentsCleansStalePending(t *testing.T) {
+	// Idempotency contract: stale pending bot reviews are deleted before
+	// retrying — also on clean runs, which create a pending approval of
+	// their own. Interrupted clean runs otherwise leave orphans forever
+	// (this branch returns before the findings-path cleanup runs).
+	f := newFake()
+	f.headSHA = "head123"
+	f.reviews = []poster.ReviewInfo{
+		{ID: 7, State: "PENDING", Reviewer: "ci-bot"},
+		{ID: 8, State: "PENDING", Reviewer: "someone-else"},
+	}
+	stats, err := Publish(result(), f, Options{RunTag: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.deletedReviews) != 1 || f.deletedReviews[0] != 7 {
+		t.Fatalf("only own stale pending review deleted, got %v", f.deletedReviews)
+	}
+	if len(f.submitStates) != 1 || f.submitStates[0] != StateApproved {
+		t.Fatalf("approval must still submit, got %v", f.submitStates)
+	}
+	if stats.State != StateApproved {
+		t.Fatalf("stats.State = %q, want APPROVED", stats.State)
 	}
 }
 
@@ -513,6 +545,8 @@ func TestDecideState(t *testing.T) {
 		{"skipped findings still count", []review.Comment{c("a.go", 1, 1, "high")}, "low", true, StateRequestChanges},
 		{"malformed threshold fails safe to comment", []review.Comment{c("a.go", 1, 1, "low")}, "banana", true, StateRequestChanges},
 		{"malformed threshold with findings blocks", []review.Comment{c("a.go", 1, 1, "low")}, "banana", false, StateComment},
+		{"unranked severity fails safe: empty blocks", []review.Comment{c("a.go", 1, 1, "")}, "low", true, StateRequestChanges},
+		{"unranked severity fails safe: unknown blocks", []review.Comment{c("a.go", 1, 1, "banana")}, "low", false, StateComment},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
