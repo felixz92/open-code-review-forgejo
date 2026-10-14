@@ -34,50 +34,8 @@ inline comments plus a sticky summary. Designed to run from Argo Workflows.
 ocr-forgejo [flags] [input.json]
 ```
 
-`input.json` defaults to `.ocr/ocr-result.json`. Flags may appear before or after the positional argument.
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--url` | (required) | Forgejo base URL, e.g. `https://forge.example.com` |
-| `--repo` | (required) | Repository as `owner/name` |
-| `--pr` | (required) | Pull request index |
-| `--token` | `$GIT_TOKEN` | API token (required unless `--dry-run`) |
-| `--input` | `.ocr/ocr-result.json` | Review result JSON path |
-| `--stderr-log` | `.ocr/ocr-stderr.log` | OCR stderr log, included in errors on parse failure |
-| `--stats-file` | `.ocr/ocr-stats.env` | dotenv output for posting stats |
-| `--dry-run` | `false` | Print review comments and summary instead of posting |
-| `--sticky-summary` | `true` | Update the summary comment in place across runs |
-| `--incremental` | `false` | Skip findings overlapping prior bot review comments |
-| `--incremental-overlap-threshold` | `0.6` | IoU threshold for the overlap test (strictly greater) |
-| `--route-severity-below` | `""` | Route findings at-or-below this severity to the summary |
-| `--route-categories` | `""` | Comma-separated categories to route to the summary |
-| `--approve-below` | `low` | Findings above this severity block approval (request changes); the named severity and below approve |
-| `--run-tag` | `<pr>-<head sha>` | Per-run identity for idempotency tags |
-| `--suggestions` | `true` | Include Before/After suggestion blocks in comment bodies |
-
-Exit codes: `0` success, `1` posting failure, `2` usage/config error.
-
-> **Recommendation for CI pipelines:** enable `--incremental` in the standard
-> PR review pipeline (every push to a PR). It skips findings that overlap
-> comments the bot already posted, so repeated runs don't pile up duplicate
-> inline comments; if prior activity can't be read, the filter silently
-> disables for that run and everything is posted. Leave it off for one-off or
-> differently-configured re-reviews, where overlap is not a reliable signal
-> that a finding is a duplicate.
-
-### Stats file
-
-Always written (zero-filled on early exit):
-
-```
-OCR_COMMENTS_TOTAL=1
-OCR_COMMENTS_INLINE=1
-OCR_COMMENTS_SUMMARY=0
-OCR_COMMENTS_ROUTED=0
-OCR_COMMENTS_SKIPPED=0
-OCR_COMMENTS_FAILED=0
-OCR_SUMMARY_URL=comment:1
-```
+See the [CLI reference](docs/cli.md) for the full flag list, validation
+rules, exit codes, stats file keys, and severity/category semantics.
 
 ## Argo Workflows example
 
