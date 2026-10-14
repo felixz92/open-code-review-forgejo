@@ -8,6 +8,7 @@ import (
 	"github.com/felixz92/open-code-review-forgejo/internal/format"
 	"github.com/felixz92/open-code-review-forgejo/internal/incremental"
 	"github.com/felixz92/open-code-review-forgejo/internal/poster"
+	"github.com/felixz92/open-code-review-forgejo/internal/review"
 )
 
 // maxSnippetRunes caps a finding's stored text so the ledger summary cannot
@@ -31,20 +32,26 @@ func snippet(content string) string {
 // match no entry are added as new open entries; open entries matched by no
 // current finding move to the resolved list with the resolution stamp
 // (design D2/D3). The resolved list is pruned to MaxResolvedEntries.
-func mergeLedger(prior *format.Ledger, posted, skipped []inlineItem, runTag, resolvedDate string, thresh float64) (*format.Ledger, int) {
+// mergeLedger folds the current run's inline findings into the prior ledger
+// and returns the merged ledger plus the entries this run resolved. Matching
+// reuses the incremental span semantics over the run's inline candidates
+// (posted findings plus incrementally skipped and unpostable ones: a finding
+// still present in the results never resolves its entry — design D2/D3 and
+// the spec's "fixed finding is marked resolved" scenario). Candidates that
+// match no entry keep their findings open; only successfully posted findings
+// are added as new open entries (design D3). Open entries matched by no
+// candidate move to the resolved list with the resolution stamp; the
+// resolved list is pruned to MaxResolvedEntries.
+func mergeLedger(prior *format.Ledger, candidates, posted []inlineItem, runTag, resolvedDate string, thresh float64) (*format.Ledger, []format.LedgerEntry) {
 	if prior == nil {
 		prior = &format.Ledger{Version: format.LedgerVersion}
 	}
 	next := &format.Ledger{Version: format.LedgerVersion, Resolved: append([]format.LedgerEntry(nil), prior.Resolved...)}
 	open := append([]format.LedgerEntry(nil), prior.Open...)
 	matchedOpen := make([]bool, len(open))
+	matchedCurrent := make(map[*review.Comment]bool, len(posted))
 
-	matchSet := make([]inlineItem, 0, len(posted)+len(skipped))
-	matchSet = append(matchSet, posted...)
-	matchSet = append(matchSet, skipped...)
-	matchedCurrent := make([]bool, len(matchSet))
-
-	for i, it := range matchSet {
+	for _, it := range candidates {
 		if it.span == nil || it.comment == nil {
 			continue
 		}
@@ -56,7 +63,7 @@ func mergeLedger(prior *format.Ledger, posted, skipped []inlineItem, runTag, res
 			if entry == nil || !incremental.SameCommentSpan(*it.span, *entry, thresh) {
 				continue
 			}
-			matchedOpen[j], matchedCurrent[i] = true, true
+			matchedOpen[j], matchedCurrent[it.comment] = true, true
 			// Refresh the recorded span and wording so slow line drift
 			// does not accumulate into a mismatch (design D2).
 			open[j].StartLine, open[j].EndLine = it.span.Start, it.span.End
@@ -65,7 +72,7 @@ func mergeLedger(prior *format.Ledger, posted, skipped []inlineItem, runTag, res
 		}
 	}
 
-	resolvedCount := 0
+	var thisRun []format.LedgerEntry
 	for j, e := range open {
 		if matchedOpen[j] {
 			next.Open = append(next.Open, e) // survivors keep ledger order
@@ -73,13 +80,10 @@ func mergeLedger(prior *format.Ledger, posted, skipped []inlineItem, runTag, res
 		}
 		e.ResolvedIn, e.ResolvedDate = runTag, resolvedDate
 		next.Resolved = append(next.Resolved, e)
-		resolvedCount++
+		thisRun = append(thisRun, e)
 	}
-	for i, it := range matchSet {
-		if i >= len(posted) {
-			break // only successfully posted findings enter the ledger
-		}
-		if it.span == nil || it.comment == nil || matchedCurrent[i] {
+	for _, it := range posted {
+		if it.span == nil || it.comment == nil || matchedCurrent[it.comment] {
 			continue
 		}
 		next.Open = append(next.Open, format.LedgerEntry{
@@ -93,7 +97,7 @@ func mergeLedger(prior *format.Ledger, posted, skipped []inlineItem, runTag, res
 	if excess := len(next.Resolved) - format.MaxResolvedEntries; excess > 0 {
 		next.Resolved = next.Resolved[excess:]
 	}
-	return next, resolvedCount
+	return next, thisRun
 }
 
 // freshLedger returns the empty ledger a run degrades to when prior state is
