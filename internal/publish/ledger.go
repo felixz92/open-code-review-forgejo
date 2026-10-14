@@ -1,8 +1,13 @@
 package publish
 
 import (
+	"fmt"
+	"log"
+	"strings"
+
 	"github.com/felixz92/open-code-review-forgejo/internal/format"
 	"github.com/felixz92/open-code-review-forgejo/internal/incremental"
+	"github.com/felixz92/open-code-review-forgejo/internal/poster"
 )
 
 // maxSnippetRunes caps a finding's stored text so the ledger summary cannot
@@ -89,4 +94,41 @@ func mergeLedger(prior *format.Ledger, posted, skipped []inlineItem, runTag, res
 		next.Resolved = next.Resolved[excess:]
 	}
 	return next, resolvedCount
+}
+
+// freshLedger returns the empty ledger a run degrades to when prior state is
+// unreadable (design D6).
+func freshLedger() *format.Ledger {
+	return &format.Ledger{Version: format.LedgerVersion}
+}
+
+// loadLedger reads the prior findings ledger from the existing summary
+// comment. It fails open: a failed comment listing, a corrupt or truncated
+// ledger block, or an absent block all degrade to a fresh empty ledger,
+// never blocking posting. Callers then seed a new ledger from this run.
+func loadLedger(p poster.Poster, opts Options) *format.Ledger {
+	comments, err := p.ListIssueComments()
+	if err != nil {
+		log.Printf("[resolution] could not list comments, starting fresh ledger: %v", err)
+		return freshLedger()
+	}
+	needle := format.SummaryMarker
+	if !opts.Sticky {
+		needle = fmt.Sprintf(format.PerRunMarkerFmt, opts.RunTag)
+	}
+	for i := len(comments) - 1; i >= 0; i-- {
+		if !strings.Contains(comments[i].Body, needle) {
+			continue
+		}
+		ledger, found, err := format.ParseLedger(comments[i].Body)
+		if err != nil {
+			log.Printf("[resolution] prior ledger unusable, starting fresh: %v", err)
+			return freshLedger()
+		}
+		if !found {
+			return freshLedger() // summary exists but tracking was off before
+		}
+		return ledger
+	}
+	return freshLedger()
 }
