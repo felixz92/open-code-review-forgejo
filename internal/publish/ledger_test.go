@@ -7,6 +7,7 @@ import (
 
 	"github.com/felixz92/open-code-review-forgejo/internal/format"
 	"github.com/felixz92/open-code-review-forgejo/internal/incremental"
+	"github.com/felixz92/open-code-review-forgejo/internal/policy"
 	"github.com/felixz92/open-code-review-forgejo/internal/poster"
 	"github.com/felixz92/open-code-review-forgejo/internal/review"
 )
@@ -383,5 +384,123 @@ func TestPublishFailedAndRoutedCommentsStayOutOfLedger(t *testing.T) {
 	}
 	if len(l.Open) != 0 {
 		t.Fatalf("failed comments must not enter the ledger, got %+v", l)
+	}
+}
+
+func TestPublishRoutedFindingKeepsPriorLedgerEntryOpen(t *testing.T) {
+	f1 := newFake()
+	if _, err := Publish(result(c("a.go", 1, 1, "high")), f1, Options{RunTag: "run-1", CommitID: "s", Sticky: true, ResolutionTracking: true}); err != nil {
+		t.Fatal(err)
+	}
+	summary1 := finalSummaryBody(f1)
+
+	// Run 2: the finding is still reported but policy now routes it to the
+	// summary. It must keep the prior entry open (never resolve what OCR
+	// still reports); routed comments never create entries.
+	f2 := newFake()
+	f2.issueComments = []poster.IssueCommentInfo{{ID: 71, Body: summary1}}
+	stats2, err := Publish(result(c("a.go", 1, 1, "low")), f2, Options{
+		RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true,
+		Route: policy.Build("low", ""),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats2.Routed != 1 || stats2.Resolved != 0 {
+		t.Fatalf("routed finding must not resolve its entry, routed=%d resolved=%d", stats2.Routed, stats2.Resolved)
+	}
+	_, l, found, err := format.StripLedger(finalSummaryBody(f2))
+	if err != nil || !found {
+		t.Fatalf("summary must embed the ledger, found=%v err=%v", found, err)
+	}
+	if len(l.Open) != 1 || l.Open[0].FirstSeen != "run-1" || l.Open[0].StartLine != 1 {
+		t.Fatalf("prior entry must stay open untouched, got %+v", l.Open)
+	}
+}
+
+func TestPublishUnpostableCommentCategoriesNeverCreateLedgerEntries(t *testing.T) {
+	t.Run("failed", func(t *testing.T) {
+		f := newFake()
+		f.createErr = errors.New("review boom")
+		stats, err := Publish(result(c("a.go", 1, 1, "low")), f, Options{RunTag: "t", CommitID: "s", Sticky: true, ResolutionTracking: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stats.Failed != 1 {
+			t.Fatalf("expected the comment to fail, got %+v", stats)
+		}
+		_, l, found, err := format.StripLedger(finalSummaryBody(f))
+		if err != nil || !found {
+			t.Fatalf("summary must embed the ledger, found=%v err=%v", found, err)
+		}
+		if len(l.Open) != 0 {
+			t.Fatalf("failed comments must not enter the ledger, got %+v", l)
+		}
+	})
+	t.Run("routed", func(t *testing.T) {
+		f := newFake()
+		stats, err := Publish(result(c("a.go", 1, 1, "low")), f, Options{
+			RunTag: "t", CommitID: "s", Sticky: true, ResolutionTracking: true,
+			Route: policy.Build("low", ""),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stats.Routed != 1 {
+			t.Fatalf("expected the comment to be routed, got %+v", stats)
+		}
+		_, l, found, err := format.StripLedger(finalSummaryBody(f))
+		if err != nil || !found {
+			t.Fatalf("summary must embed the ledger, found=%v err=%v", found, err)
+		}
+		if len(l.Open) != 0 {
+			t.Fatalf("routed comments must not create ledger entries, got %+v", l)
+		}
+	})
+	t.Run("no-line", func(t *testing.T) {
+		f := newFake()
+		stats, err := Publish(result(review.Comment{Content: "no line info", Severity: "low"}), f, Options{RunTag: "t", CommitID: "s", Sticky: true, ResolutionTracking: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stats.Summary != 1 {
+			t.Fatalf("expected the comment in the no-line summary, got %+v", stats)
+		}
+		_, l, found, err := format.StripLedger(finalSummaryBody(f))
+		if err != nil || !found {
+			t.Fatalf("summary must embed the ledger, found=%v err=%v", found, err)
+		}
+		if len(l.Open) != 0 {
+			t.Fatalf("no-line comments must not create ledger entries, got %+v", l)
+		}
+	})
+}
+
+func TestPublishRunRendersOpenAndResolvedSectionsInOneSummary(t *testing.T) {
+	f1 := newFake()
+	if _, err := Publish(result(c("a.go", 1, 1, "high")), f1, Options{RunTag: "run-1", CommitID: "s", Sticky: true, ResolutionTracking: true}); err != nil {
+		t.Fatal(err)
+	}
+	summary1 := finalSummaryBody(f1)
+
+	// Run 2: a.go is fixed, a new finding arrives on b.go.
+	f2 := newFake()
+	f2.issueComments = []poster.IssueCommentInfo{{ID: 71, Body: summary1}}
+	stats2, err := Publish(result(c("b.go", 5, 6, "high")), f2, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats2.Inline != 1 || stats2.Resolved != 1 {
+		t.Fatalf("run 2 must add 1 and resolve 1, got %+v", stats2)
+	}
+	out := finalSummaryBody(f2)
+	if !strings.Contains(out, "Findings still open: 1") || !strings.Contains(out, "`b.go` (L5-L6)") {
+		t.Fatalf("open section must render the new finding, got %q", out)
+	}
+	if !strings.Contains(out, "Resolved **1**") || !strings.Contains(out, "✅ RESOLVED (run run-2") || !strings.Contains(out, "`a.go` (L1)") {
+		t.Fatalf("resolved section must render the resolution, got %q", out)
+	}
+	if idxOpen, idxRes := strings.Index(out, "still open"), strings.Index(out, "Resolved **1**"); idxRes < idxOpen {
+		t.Fatalf("open section must come first: %q", out)
 	}
 }
