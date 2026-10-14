@@ -6,6 +6,84 @@ import (
 	"testing"
 )
 
+func TestEncodeLedgerRoundTrip(t *testing.T) {
+	in := &Ledger{
+		Version: LedgerVersion,
+		Open: []LedgerEntry{
+			{Path: "a.go", StartLine: 3, EndLine: 9, FirstSeen: "run-1", Content: "unused var"},
+		},
+		Resolved: []LedgerEntry{
+			{Path: "b.go", StartLine: 1, EndLine: 1, FirstSeen: "run-1", ResolvedIn: "run-2", ResolvedDate: "2026-10-14", Content: "off-by-one"},
+		},
+	}
+	block := EncodeLedger(in)
+	if !strings.HasPrefix(block, LedgerStartMarker) || !strings.HasSuffix(block, LedgerEndMarker) {
+		t.Fatalf("ledger block must be wrapped in markers, got %q", block)
+	}
+	got, found, err := ParseLedger(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected ledger block to be found")
+	}
+	if got.Version != LedgerVersion || len(got.Open) != 1 || len(got.Resolved) != 1 {
+		t.Fatalf("round trip lost data: %+v", got)
+	}
+	e := got.Open[0]
+	if e != (LedgerEntry{Path: "a.go", StartLine: 3, EndLine: 9, FirstSeen: "run-1", Content: "unused var"}) {
+		t.Fatalf("open entry mismatch: %+v", e)
+	}
+	if got.Resolved[0].ResolvedIn != "run-2" || got.Resolved[0].ResolvedDate != "2026-10-14" {
+		t.Fatalf("resolved entry mismatch: %+v", got.Resolved[0])
+	}
+}
+
+func TestParseLedgerMalformedBlockReturnsError(t *testing.T) {
+	body := LedgerStartMarker + "\nnot json at all\n" + LedgerEndMarker
+	if _, _, err := ParseLedger(body); err == nil {
+		t.Fatal("expected error for corrupt ledger JSON")
+	}
+}
+
+func TestParseLedgerMissingBodyMarkerReturnsNotFound(t *testing.T) {
+	got, found, err := ParseLedger("just a body without any ledger block")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Fatal("expected not-found when body has no ledger block")
+	}
+	if got != nil {
+		t.Fatalf("expected nil ledger when not found, got %+v", got)
+	}
+}
+
+func TestParseLedgerTolerantOfMissingFields(t *testing.T) {
+	body := LedgerStartMarker + "\n" + `{"open":[{"path":"a.go","start_line":2,"end_line":2}]}` + "\n" + LedgerEndMarker
+	got, found, err := ParseLedger(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected ledger to be found")
+	}
+	if got.Version != LedgerVersion {
+		t.Fatalf("missing version should decode to current version, got %d", got.Version)
+	}
+	e := got.Open[0]
+	if e.Path != "a.go" || e.StartLine != 2 || e.EndLine != 2 || e.FirstSeen != "" {
+		t.Fatalf("entry fields missing from payload must decode as zero values, got %+v", e)
+	}
+}
+
+func TestParseLedgerRejectsUnsupportedNewerVersion(t *testing.T) {
+	body := LedgerStartMarker + "\n" + `{"version":42,"open":[]}` + "\n" + LedgerEndMarker
+	if _, _, err := ParseLedger(body); err == nil {
+		t.Fatal("expected error for unsupported newer ledger version")
+	}
+}
+
 func TestStripLedgerBodyWithBlock(t *testing.T) {
 	body := "intro\n\n<!-- ocr-ledger -->\n{\"version\":1}\n<!-- /ocr-ledger -->"
 	clean, _, found, err := StripLedger(body)
@@ -47,7 +125,53 @@ func TestStripLedgerTruncatedBlockReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for truncated ledger block")
 	}
-	if !errors.Is(err, errTruncatedLedger) && !strings.Contains(err.Error(), "truncated") {
+	if !errors.Is(err, errTruncatedLedger) {
 		t.Fatalf("expected truncation error, got %v", err)
+	}
+}
+
+func TestFormatLedgerSectionsOpenAndResolved(t *testing.T) {
+	open := []LedgerEntry{
+		{Path: "z.go", StartLine: 5, EndLine: 9, FirstSeen: "run-1", Content: "zeta"},
+		{Path: "a.go", StartLine: 1, EndLine: 1, FirstSeen: "run-1", Content: "alpha"},
+	}
+	resolved := []LedgerEntry{{Path: "m.go", StartLine: 3, EndLine: 4, FirstSeen: "run-1", ResolvedIn: "run-2", ResolvedDate: "2026-10-14", Content: "mid"}}
+	out := FormatLedgerSections(open, resolved)
+	if !strings.Contains(out, "2") || !strings.Contains(out, "still open") {
+		t.Fatalf("open section must state the open count: %q", out)
+	}
+	for _, want := range []string{"`z.go`", "`a.go`", "(L1)", "(L5-L9)", "alpha", "zeta", "`m.go`", "(L3-L4)", "run-2", "2026-10-14"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("section missing %q: %s", want, out)
+		}
+	}
+	if !strings.Contains(out, "Resolved **1**") {
+		t.Fatalf("resolved count must be stated: %q", out)
+	}
+	if idx := strings.Index(out, "still open"); idx < 0 || strings.Index(out, "Resolved") < idx {
+		t.Fatalf("open section must come first: %q", out)
+	}
+	if strings.Index(out, "`a.go`") > strings.Index(out, "`z.go`") {
+		t.Fatalf("open findings must render sorted by path: %q", out)
+	}
+	if !strings.Contains(out, "✅") {
+		t.Fatalf("resolved entries need a resolved indication: %q", out)
+	}
+}
+
+func TestFormatLedgerSectionsOpenOnlyStatesNoResolutionCount(t *testing.T) {
+	open := []LedgerEntry{{Path: "a.go", StartLine: 1, EndLine: 1, FirstSeen: "run-1", Content: "alpha"}}
+	out := FormatLedgerSections(open, nil)
+	if strings.Contains(out, "Resolved") || strings.Contains(out, "resolved") {
+		t.Fatalf("no resolved section when nothing resolved this run: %q", out)
+	}
+	if !strings.Contains(out, "`a.go`") || !strings.Contains(out, "alpha") {
+		t.Fatalf("open findings must render: %q", out)
+	}
+}
+
+func TestFormatLedgerSectionsEmptyLedgerRendersNothing(t *testing.T) {
+	if out := FormatLedgerSections(nil, nil); out != "" {
+		t.Fatalf("empty ledger must render nothing, got %q", out)
 	}
 }

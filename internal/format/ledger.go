@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -118,4 +119,67 @@ func decodeLedger(payload string) (*Ledger, error) {
 		l.Version = LedgerVersion
 	}
 	return &l, nil
+}
+
+// FormatLedgerSections renders the resolution-tracking sections appended to a
+// tracking-enabled summary: the findings still open (summary-fallback style:
+// path, span, content) followed by the findings resolved during this run with
+// their resolution stamp. Entries render sorted by path and span for
+// deterministic output.
+func FormatLedgerSections(open, resolved []LedgerEntry) string {
+	if len(open) == 0 && len(resolved) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if len(open) > 0 {
+		fmt.Fprintf(&b, "\n\n---\n\n### 📌 Findings still open: %d\n", len(open))
+		for _, e := range sortedLedgerEntries(open) {
+			b.WriteString("\n\n")
+			b.WriteString(ledgerItem(e, "", ""))
+		}
+	}
+	if len(resolved) > 0 {
+		fmt.Fprintf(&b, "\n\n---\n\n### ✅ Resolved **%d** finding(s) in this run\n", len(resolved))
+		for _, e := range sortedLedgerEntries(resolved) {
+			b.WriteString("\n\n")
+			b.WriteString(ledgerItem(e, e.ResolvedIn, e.ResolvedDate))
+		}
+	}
+	return b.String()
+}
+
+// sortedLedgerEntries returns the entries ordered by path and span.
+func sortedLedgerEntries(entries []LedgerEntry) []LedgerEntry {
+	out := append([]LedgerEntry(nil), entries...)
+	sort.SliceStable(out, func(i, j int) bool {
+		a, c := out[i], out[j]
+		if a.Path != c.Path {
+			return a.Path < c.Path
+		}
+		if a.StartLine != c.StartLine {
+			return a.StartLine < c.StartLine
+		}
+		return a.EndLine < c.EndLine
+	})
+	return out
+}
+
+// ledgerItem renders one ledger entry like a summary fallback item. Resolved
+// entries show the run and date of their resolution.
+func ledgerItem(e LedgerEntry, runTag, resolvedDate string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "### 📄 `%s`", e.Path)
+	if e.StartLine > 0 && e.EndLine > 0 {
+		if e.StartLine == e.EndLine {
+			fmt.Fprintf(&b, " (L%d)", e.EndLine)
+		} else {
+			fmt.Fprintf(&b, " (L%d-L%d)", e.StartLine, e.EndLine)
+		}
+	}
+	b.WriteString("\n\n")
+	if runTag != "" || resolvedDate != "" {
+		fmt.Fprintf(&b, "✅ RESOLVED (run %s, %s)\n\n", runTag, resolvedDate)
+	}
+	b.WriteString(e.Content)
+	return b.String()
 }
