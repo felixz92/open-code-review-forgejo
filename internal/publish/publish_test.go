@@ -15,14 +15,15 @@ import (
 // fakePoster records calls and serves scripted data.
 type fakePoster struct {
 	// scripted
-	reviews        []poster.ReviewInfo
-	listReviewsErr error
-	reviewComments map[int64][]poster.ReviewCommentInfo
-	issueComments  []poster.IssueCommentInfo
-	diff           []byte
-	getDiffErr     error
-	headSHA        string
-	createErr      error
+	reviews          []poster.ReviewInfo
+	listReviewsErr   error
+	reviewComments   map[int64][]poster.ReviewCommentInfo
+	issueComments    []poster.IssueCommentInfo
+	issueCommentsErr error
+	diff             []byte
+	getDiffErr       error
+	headSHA          string
+	createErr        error
 
 	// recorded
 	createdComments []poster.ReviewCommentInput
@@ -72,7 +73,7 @@ func (f *fakePoster) ListPullReviewComments(reviewID int64) ([]poster.ReviewComm
 	return f.reviewComments[reviewID], nil
 }
 func (f *fakePoster) ListIssueComments() ([]poster.IssueCommentInfo, error) {
-	return f.issueComments, nil
+	return f.issueComments, f.issueCommentsErr
 }
 func (f *fakePoster) CreateIssueComment(body string) (int64, error) {
 	f.createdSummary = append(f.createdSummary, body)

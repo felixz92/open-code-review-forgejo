@@ -1,10 +1,12 @@
 package publish
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/felixz92/open-code-review-forgejo/internal/format"
 	"github.com/felixz92/open-code-review-forgejo/internal/incremental"
+	"github.com/felixz92/open-code-review-forgejo/internal/poster"
 	"github.com/felixz92/open-code-review-forgejo/internal/review"
 )
 
@@ -13,9 +15,6 @@ func mergeItem(path string, start, end int64) inlineItem {
 	return inlineItem{comment: &c, span: incremental.NewSpan(start, end)}
 }
 
-func inlineSpan(it inlineItem) (int64, int64) {
-	return it.span.Start, it.span.End
-}
 
 func TestMergeLedgerPersistsMatchedFinding(t *testing.T) {
 	prior := &format.Ledger{
@@ -180,3 +179,46 @@ func TestMergeLedgerKeepsStableOpenOrder(t *testing.T) {
 	}
 }
 
+func loadLedgerWithStickyBody(t *testing.T, body string) *format.Ledger {
+	t.Helper()
+	f := newFake()
+	f.issueComments = []poster.IssueCommentInfo{
+		{ID: 1, Body: "unrelated"},
+		{ID: 2, Body: format.SummaryMarker + "\n<!-- ocr-summary run: own -->\nold body\n" + body},
+	}
+	return loadLedger(f, Options{RunTag: "t", Sticky: true})
+}
+
+func TestLoadLedgerParsesPriorLedgerFromStickySummary(t *testing.T) {
+	ledger := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 1, EndLine: 1, FirstSeen: "run-1"}},
+	}
+	l := loadLedgerWithStickyBody(t, format.EncodeLedger(ledger))
+	if l == nil || len(l.Open) != 1 || l.Open[0].Path != "a.go" {
+		t.Fatalf("prior ledger must be parsed from the sticky summary, got %+v", l)
+	}
+}
+
+func TestLoadLedgerFailsOpenOnUnreadableSummary(t *testing.T) {
+	f := newFake()
+	f.issueCommentsErr = errors.New("list boom")
+	l := loadLedger(f, Options{RunTag: "t", Sticky: true})
+	if l == nil || l.Version != format.LedgerVersion || len(l.Open) != 0 || len(l.Resolved) != 0 {
+		t.Fatalf("unreadable summary must degrade to a fresh ledger, got %+v", l)
+	}
+}
+
+func TestLoadLedgerFailsOpenOnCorruptLedger(t *testing.T) {
+	l := loadLedgerWithStickyBody(t, format.LedgerStartMarker+"\n{corrupt\n"+format.LedgerEndMarker)
+	if l == nil || l.Version != format.LedgerVersion || len(l.Open) != 0 || len(l.Resolved) != 0 {
+		t.Fatalf("corrupt ledger must degrade to a fresh ledger, got %+v", l)
+	}
+}
+
+func TestLoadLedgerFreshWhenSummaryLacksLedger(t *testing.T) {
+	l := loadLedgerWithStickyBody(t, "plain summary body")
+	if l == nil || l.Version != format.LedgerVersion || len(l.Open) != 0 || len(l.Resolved) != 0 {
+		t.Fatalf("missing ledger block must yield a fresh ledger, got %+v", l)
+	}
+}
