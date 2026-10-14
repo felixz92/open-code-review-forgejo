@@ -366,6 +366,29 @@ func TestPublishTracksPostedFindingsThenResolves(t *testing.T) {
 	if len(l2.Open) != 0 || len(l2.Resolved) != 1 || l2.Resolved[0].ResolvedIn != "run-2" || l2.Resolved[0].ResolvedDate == "" {
 		t.Fatalf("run 2 ledger must hold the resolved entry, got %+v", l2)
 	}
+
+	// Run 3: a new finding posts; earlier resolutions stay in the ledger
+	// state but must not re-render into the visible resolved section.
+	f3 := newFake()
+	f3.issueComments = []poster.IssueCommentInfo{{ID: 72, Body: summary2}}
+	stats3, err := Publish(result(c("b.go", 5, 6, "high")), f3, Options{RunTag: "run-3", CommitID: "s", Sticky: true, ResolutionTracking: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats3.Inline != 1 || stats3.Resolved != 0 {
+		t.Fatalf("run 3 must add 1 and resolve none, got %+v", stats3)
+	}
+	body3 := finalSummaryBody(f3)
+	if strings.Contains(body3, "✅ RESOLVED (run run-2") || strings.Contains(body3, "Resolved **1**") {
+		t.Fatalf("prior-run resolutions must not re-render into the summary, got %q", body3)
+	}
+	_, l3, found3, err := format.StripLedger(body3)
+	if err != nil || !found3 {
+		t.Fatalf("run 3 summary must embed the ledger, found=%v err=%v", found3, err)
+	}
+	if len(l3.Open) != 1 || l3.Open[0].Path != "b.go" || len(l3.Resolved) != 1 || l3.Resolved[0].ResolvedIn != "run-2" {
+		t.Fatalf("prior resolutions must persist in the ledger state, got %+v", l3)
+	}
 }
 
 func TestPublishFailedAndRoutedCommentsStayOutOfLedger(t *testing.T) {
