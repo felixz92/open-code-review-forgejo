@@ -16,8 +16,11 @@ import (
 // balloon.
 const maxSnippetRunes = 200
 
-// snippet truncates a finding text for ledger storage.
+// snippet truncates a finding text for ledger storage and neutralizes HTML
+// comment terminators so content cannot forge or truncate the markers
+// framing the ledger block (same neutralization as inline comment bodies).
 func snippet(content string) string {
+	content = strings.ReplaceAll(content, "-->", "-- >")
 	runes := []rune(content)
 	if len(runes) <= maxSnippetRunes {
 		return content

@@ -178,3 +178,17 @@ func TestValidateOverlapThresholdRange(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateOverlapThresholdRangeForTracking(t *testing.T) {
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	for _, tc := range []struct {
+		v      float64
+		wantOK bool
+	}{{0.6, true}, {0, false}, {1, false}, {1.5, false}} {
+		c := &Config{URL: "https://x", Repo: "o/r", PRIndex: 1, ResolutionTracking: true, IncrementalOverlapThresh: tc.v}
+		err := c.validate(fs)
+		if tc.wantOK != (err == nil) {
+			t.Fatalf("validate(%v, tracking) err = %v, wantOK = %v", tc.v, err, tc.wantOK)
+		}
+	}
+}

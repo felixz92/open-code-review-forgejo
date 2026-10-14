@@ -492,6 +492,27 @@ func TestPublishPrecheckDropsAndSubmitFailuresKeepPriorEntriesOpen(t *testing.T)
 	})
 }
 
+func TestMergeLedgerSnippetsSanitizeHtmlCommentTerminators(t *testing.T) {
+	c := review.Comment{Path: "a.go", StartLine: 1, EndLine: 1, Content: "bug in <!-- /ocr-ledger --> chain"}
+	cands := []inlineItem{{comment: &c, span: incremental.NewSpan(1, 1)}}
+	next, _ := mergeLedger(nil, cands, cands, "run-1", "2026-10-14", 0.6)
+	if len(next.Open) != 1 {
+		t.Fatalf("finding must enter the ledger, got %+v", next.Open)
+	}
+	if strings.Contains(next.Open[0].Content, "-->") {
+		t.Fatalf("stored snippet must neutralize HTML-comment terminators, got %q", next.Open[0].Content)
+	}
+	// The encoded block must survive strip/parse with the hostile content.
+	block := format.EncodeLedger(next)
+	_, parsed, found, err := format.StripLedger("body\n" + block)
+	if err != nil || !found {
+		t.Fatalf("ledger block with quoted marker text must round-trip, err=%v", err)
+	}
+	if len(parsed.Open) != 1 || parsed.Open[0].Content != "bug in <!-- /ocr-ledger -- > chain" {
+		t.Fatalf("sanitized content must round-trip, got %+v", parsed.Open)
+	}
+}
+
 func TestPublishUnpostableCommentCategoriesNeverCreateLedgerEntries(t *testing.T) {
 	t.Run("failed", func(t *testing.T) {
 		f := newFake()

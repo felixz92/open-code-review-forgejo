@@ -138,7 +138,7 @@ func (c *Config) validate(fs *flag.FlagSet) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required flag(s): %s", strings.Join(missing, ", "))
 	}
-	if c.Incremental && (c.IncrementalOverlapThresh <= 0 || c.IncrementalOverlapThresh >= 1) {
+	if (c.Incremental || c.ResolutionTracking) && (c.IncrementalOverlapThresh <= 0 || c.IncrementalOverlapThresh >= 1) {
 		return fmt.Errorf("--incremental-overlap-threshold must be in (0, 1), got %v", c.IncrementalOverlapThresh)
 	}
 	parts := strings.SplitN(c.Repo, "/", 2)
