@@ -23,7 +23,7 @@ The CLI SHALL accept `--approve-below <severity>` with at-or-below semantics mat
 ### Requirement: Review state decision
 
 The CLI SHALL derive the submitted review state from the result JSON and the posting outcome, with no run-to-run state:
-- findings = comments in the result JSON at-or-above the approval threshold, counted regardless of policy routing or incremental skipping
+- findings = comments in the result JSON at-or-above the approval threshold, counted regardless of policy routing or incremental skipping; comments whose severity is not on the known ladder (including a missing severity field) SHALL always count as findings
 - no findings → submit `APPROVED`
 - findings present and posting succeeded (inline review submitted or summary published) → submit `REQUEST_CHANGES`
 - findings present but posting failed → submit `COMMENT` instead, logging the posting failure
@@ -57,6 +57,11 @@ The CLI SHALL derive the submitted review state from the result JSON and the pos
 
 - **WHEN** a finding exists but the review cannot be created or submitted
 - **THEN** the run logs the failure and submits `COMMENT` (or no review when nothing could be created)
+
+#### Scenario: Unranked comment severity fails safe
+
+- **WHEN** a comment in the result JSON carries a severity that is not on the known ladder, for example because the field is missing entirely
+- **THEN** the comment counts as a finding and the run does not submit `APPROVED`
 
 ### Requirement: Empty review on clean run
 

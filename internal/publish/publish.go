@@ -33,8 +33,9 @@ type Options struct {
 	// inline and summary-fallback comment bodies.
 	Suggestions bool
 	// ApproveBelow is the highest severity that does not block approval:
-	// findings above it force REQUEST_CHANGES. Empty defaults to "low";
-	// unknown values fail safe (all findings block).
+	// findings above it force REQUEST_CHANGES. Empty defaults to "low".
+	// Fail safe: unknown thresholds and unranked comment severities both
+	// count as blocking findings.
 	ApproveBelow string
 	// GetDiff is used by tests via the Poster interface; no extra fields.
 }
@@ -81,7 +82,11 @@ const defaultApproveBelow = "low"
 func countFindings(result *review.Result, approveBelow string) int {
 	n := 0
 	for i := range result.Comments {
-		if policy.SeverityAbove(&result.Comments[i], approveBelow) {
+		// Fail safe: a comment whose severity the ladder does not
+		// recognize (e.g. a missing or nonstandard field in the
+		// external result JSON) blocks approval instead of silently
+		// approving while it is still posted inline.
+		if !policy.SeverityKnown(result.Comments[i].Severity) || policy.SeverityAbove(&result.Comments[i], approveBelow) {
 			n++
 		}
 	}
@@ -119,12 +124,18 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 		if message == "" {
 			message = "No comments generated. Looks good to me."
 		}
+		cleanupStalePending(p)
 		commitID := bestCommitID(p, opts)
 		reviewID, err := p.CreatePullReview(nil, commitID)
 		if err != nil {
 			stats.State = StateComment
 			log.Printf("[approve] approval review creation failed: %v", err)
 		} else if err := p.SubmitPullReview(reviewID, StateApproved, approveBody); err != nil {
+			// Mirror the findings path: the created pending review is
+			// removed on refusal so a persistent failure cannot
+			// accumulate orphans (this branch returns before any later
+			// deleteStalePending pass could reap them).
+			_ = p.DeletePullReview(reviewID)
 			stats.State = StateComment
 			log.Printf("[approve] approval review submit failed: %v", err)
 		} else {
@@ -225,14 +236,7 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 	}
 
 	// Idempotent retry cleanup: delete stale pending reviews of this bot.
-	// Unknown identity means ownership cannot be proven, so cleanup is
-	// skipped to avoid deleting other users' pending reviews.
-	botLogin, err := p.WhoAmI()
-	if err != nil {
-		log.Printf("[cleanup] skipping stale pending review cleanup, identity unknown: %v", err)
-	} else {
-		deleteStalePending(p, botLogin)
-	}
+	cleanupStalePending(p)
 
 	// Summary anchor (pre-review body) before posting.
 	anchor := anchorSummary(p, opts, stats, noLine, routed, result.Warnings)
@@ -342,6 +346,18 @@ func randUint32() uint32 {
 		return uint32(time.Now().UnixNano())
 	}
 	return binary.BigEndian.Uint32(b[:])
+}
+
+// cleanupStalePending deletes stale pending reviews of the bot account.
+// Unknown identity means ownership cannot be proven, so cleanup is skipped
+// to avoid deleting other users' pending reviews.
+func cleanupStalePending(p poster.Poster) {
+	botLogin, err := p.WhoAmI()
+	if err != nil {
+		log.Printf("[cleanup] skipping stale pending review cleanup, identity unknown: %v", err)
+		return
+	}
+	deleteStalePending(p, botLogin)
 }
 
 func deleteStalePending(p poster.Poster, botLogin string) {

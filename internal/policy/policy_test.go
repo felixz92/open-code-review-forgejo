@@ -124,3 +124,26 @@ func TestSeverityAbove(t *testing.T) {
 		}
 	}
 }
+
+func TestSeverityKnown(t *testing.T) {
+	// Exported so the approval verdict can fail safe: an unranked severity
+	// (e.g. a missing field in the external result JSON) must block.
+	tests := []struct {
+		severity string
+		want     bool
+	}{
+		{"low", true},
+		{"medium", true},
+		{"high", true},
+		{"critical", true},
+		{" HIGH ", true},
+		{"", false},
+		{"weird", false},
+		{"banana", false},
+	}
+	for _, tt := range tests {
+		if got := SeverityKnown(tt.severity); got != tt.want {
+			t.Errorf("SeverityKnown(%q) = %v, want %v", tt.severity, got, tt.want)
+		}
+	}
+}
