@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Publish open-code-review (`ocr`) results onto Forgejo pull requests from CI: one review per run with inline comments, a sticky summary comment, incremental filtering against prior bot activity, policy routing, and a diff pre-check, with retry, dry-run, stats-file, and severity-gating behavior for Argo Workflows integration.
+Publish open-code-review (`ocr`) results onto Forgejo pull requests from CI: one review per run with inline comments, a sticky summary comment, incremental filtering against prior bot activity, policy routing, and a diff pre-check, with retry, dry-run, and stats-file behavior for Argo Workflows integration.
 
 ## Requirements
 
@@ -85,7 +85,7 @@ Every posted inline comment SHALL carry a per-run unique HTML id tag and a `[cat
 
 ### Requirement: Single-review posting
 
-The CLI SHALL post all anchorable comments as ONE Forgejo review per run: create the review with all inline comments, then submit it with event `COMMENT`. Each inline comment SHALL be anchored at its `end_line` via the new-file line position; multiline spans SHALL be stated in the comment body. The review creation SHALL carry the commit SHA that OCR actually reviewed (from `manifest.input.resolved_head`, falling back to the PR's current head SHA) so anchors bind to the reviewed revision.
+The CLI SHALL post all anchorable comments as ONE Forgejo review per run: create the review with all inline comments, then submit it with the computed review state (see the `ocr-forgejo-review-state` capability: `APPROVED` when the result JSON has no findings at-or-above the approval threshold, `REQUEST_CHANGES` when findings post successfully, `COMMENT` when posting failed). Each inline comment SHALL be anchored at its `end_line` via the new-file line position; multiline spans SHALL be stated in the comment body. The review creation SHALL carry the commit SHA that OCR actually reviewed (from `manifest.input.resolved_head`, falling back to the PR's current head SHA) so anchors bind to the reviewed revision.
 
 #### Scenario: All comments anchorable
 
@@ -101,6 +101,20 @@ The CLI SHALL post all anchorable comments as ONE Forgejo review per run: create
 
 - **WHEN** the PR head has moved since OCR ran and review creation carries the stale reviewed SHA
 - **THEN** review creation fails against the stale SHA, comments are classified as unpostable with a stated reason, and the summary reports them
+
+#### Scenario: Findings request changes
+
+- **WHEN** anchorable comments above the approval threshold post successfully
+- **THEN** the review is submitted with event `REQUEST_CHANGES` rather than `COMMENT`
+
+### Requirement: Stats output
+
+On every exit path the CLI SHALL write a dotenv stats file (default `.ocr/ocr-stats.env`) with mutually exclusive counts `OCR_COMMENTS_TOTAL`, `OCR_COMMENTS_INLINE`, `OCR_COMMENTS_SUMMARY`, `OCR_COMMENTS_ROUTED`, `OCR_COMMENTS_SKIPPED`, `OCR_COMMENTS_FAILED`, and `OCR_SUMMARY_URL`.
+
+#### Scenario: Stats file always written
+
+- **WHEN** posting fails partway through
+- **THEN** the stats file still exists with the counts achieved so far
 
 ### Requirement: Partition into inline, no-line, and routed
 
@@ -204,16 +218,3 @@ Before creating a review, the CLI SHALL delete any prior pending (unsubmitted) r
 - **WHEN** a previous run crashed after creating a pending review and the CLI runs again
 - **THEN** the stale pending review is deleted before the new review is created
 
-### Requirement: Stats output and severity gating
-
-On every exit path the CLI SHALL write a dotenv stats file (default `.ocr/ocr-stats.env`) with mutually exclusive counts `OCR_COMMENTS_TOTAL`, `OCR_COMMENTS_INLINE`, `OCR_COMMENTS_SUMMARY`, `OCR_COMMENTS_ROUTED`, `OCR_COMMENTS_SKIPPED`, `OCR_COMMENTS_FAILED`, and `OCR_SUMMARY_URL`. When `--fail-on-severity` names a known severity and any comment is at-or-above it, the CLI SHALL exit non-zero after posting.
-
-#### Scenario: Stats file always written
-
-- **WHEN** posting fails partway through
-- **THEN** the stats file still exists with the counts achieved so far
-
-#### Scenario: Severity gate trips
-
-- **WHEN** `--fail-on-severity critical` is set and a result contains a critical comment
-- **THEN** the CLI posts normally but exits non-zero
