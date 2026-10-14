@@ -2,6 +2,7 @@ package publish
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/felixz92/open-code-review-forgejo/internal/format"
@@ -219,5 +220,107 @@ func TestLoadLedgerFreshWhenSummaryLacksLedger(t *testing.T) {
 	l := loadLedgerWithStickyBody(t, "plain summary body")
 	if l == nil || l.Version != format.LedgerVersion || len(l.Open) != 0 || len(l.Resolved) != 0 {
 		t.Fatalf("missing ledger block must yield a fresh ledger, got %+v", l)
+	}
+}
+
+func TestPublishCleanRunResolvesAllOpenLedger(t *testing.T) {
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 10, EndLine: 10, FirstSeen: "run-1", Content: "content a.go"}},
+	}
+	f := newFake()
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	r := &review.Result{Message: "nothing to comment on"}
+	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Resolved != 1 {
+		t.Fatalf("clean run must resolve the one open entry, got %d", stats.Resolved)
+	}
+	body, ok := f.editedSummary[31]
+	if !ok {
+		t.Fatalf("summary must update in place, summaries=%v", f.createdSummary)
+	}
+	if !strings.Contains(body, "Resolved **1** finding(s) in this run") {
+		t.Fatalf("clean run with open ledger must report resolutions, got %q", body)
+	}
+	if !strings.Contains(body, "✅ RESOLVED (run run-2") || !strings.Contains(body, "`a.go` (L10)") {
+		t.Fatalf("resolved entries must render with stamp and span, got %q", body)
+	}
+	_, l, found, err := format.StripLedger(body)
+	if err != nil || !found {
+		t.Fatalf("summary must carry the ledger block: found=%v err=%v", found, err)
+	}
+	if len(l.Open) != 0 || len(l.Resolved) != 1 || l.Resolved[0].Path != "a.go" {
+		t.Fatalf("ledger must move the entry to resolved, got %+v", l)
+	}
+}
+
+func TestPublishCleanRunEmptyLedgerKeepsExistingBody(t *testing.T) {
+	f := newFake()
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body"}}
+	r := &review.Result{Message: "done"}
+	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Resolved != 0 {
+		t.Fatalf("empty ledger must resolve nothing, got %d", stats.Resolved)
+	}
+	body := f.editedSummary[31]
+	if strings.Contains(body, "Resolved") || strings.Contains(body, "RESOLVED") {
+		t.Fatalf("no resolved section for an empty ledger, got %q", body)
+	}
+	if !strings.Contains(body, "**OpenCodeReview**: done") {
+		t.Fatalf("existing no-issues body must be kept, got %q", body)
+	}
+	if _, l, found, err := format.StripLedger(body); err != nil || !found || len(l.Open) != 0 || len(l.Resolved) != 0 {
+		t.Fatalf("empty ledger must persist in the summary body, found=%v err=%v ledger=%+v", found, err, l)
+	}
+}
+
+func finalSummaryBody(f *fakePoster) string {
+	var body string
+	for _, b := range f.editedSummary {
+		if body != "" {
+			panic("test fake expects at most one summary edit")
+		}
+		body = b
+	}
+	if body == "" && len(f.createdSummary) > 0 {
+		body = f.createdSummary[len(f.createdSummary)-1]
+	}
+	return body
+}
+
+func TestPublishTrackingDisabledStripsLegacyLedgerAndMatchesClassicBody(t *testing.T) {
+	legacyPrior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 1, EndLine: 1, FirstSeen: "run-1"}},
+	}
+	withPrior := newFake()
+	withPrior.issueComments = []poster.IssueCommentInfo{{
+		ID:   31,
+		Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(legacyPrior),
+	}}
+	r := result(c("a.go", 3, 3, "low"))
+	if _, err := Publish(r, withPrior, Options{RunTag: "t", CommitID: "s", Sticky: true}); err != nil {
+		t.Fatal(err)
+	}
+	withoutPrior := newFake()
+	if _, err := Publish(result(c("a.go", 3, 3, "low")), withoutPrior, Options{RunTag: "t", CommitID: "s", Sticky: true}); err != nil {
+		t.Fatal(err)
+	}
+	b1 := finalSummaryBody(withPrior)
+	b2 := finalSummaryBody(withoutPrior)
+	if b1 == "" || b2 == "" {
+		t.Fatalf("both runs must produce a final summary: %q / %q", b1, b2)
+	}
+	if strings.Contains(b1, format.LedgerStartMarker) || strings.Contains(b1, format.LedgerEndMarker) {
+		t.Fatalf("tracking-off summary must strip the legacy ledger block, got %q", b1)
+	}
+	if b1 != b2 {
+		t.Fatalf("tracking-off summary must be byte-identical to the classic format:\nwant %q\ngot  %q", b2, b1)
 	}
 }
