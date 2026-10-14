@@ -208,9 +208,15 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 	// Resolution-tracking candidates: every finding with usable line
 	// evidence the run reported for inline posting or routed to the
 	// summary, captured before incremental and diff pre-filtering. A
-	// finding still reported by OCR never resolves its ledger entry, and
-	// only successfully posted findings create entries (matched-only
-	// items can only keep existing entries open).
+	// finding still reported by OCR never resolves its ledger entry as
+	// long as it is reported with usable line evidence. Findings without
+	// lines land in the no-line bucket and never participate in matching
+	// (per spec, findings without usable line information never match),
+	// so a finding
+	// re-reported without lines cannot keep its entry open — the entry
+	// resolves here and re-enters fresh once the finding is reported with
+	// lines again. Only successfully posted findings create entries
+	// (matched-only items can only keep existing entries open).
 	candidates := make([]inlineItem, 0, len(inline)+len(routedCands))
 	candidates = append(candidates, inline...)
 	candidates = append(candidates, routedCands...)

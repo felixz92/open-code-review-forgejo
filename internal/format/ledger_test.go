@@ -40,7 +40,7 @@ func TestEncodeLedgerRoundTrip(t *testing.T) {
 }
 
 func TestParseLedgerMalformedBlockReturnsError(t *testing.T) {
-	body := LedgerStartMarker + "\nnot json at all\n" + LedgerEndMarker
+	body := LedgerStartMarker + "not json at all" + LedgerEndMarker
 	if _, _, err := ParseLedger(body); err == nil {
 		t.Fatal("expected error for corrupt ledger JSON")
 	}
@@ -60,7 +60,7 @@ func TestParseLedgerMissingBodyMarkerReturnsNotFound(t *testing.T) {
 }
 
 func TestParseLedgerTolerantOfMissingFields(t *testing.T) {
-	body := LedgerStartMarker + "\n" + `{"open":[{"path":"a.go","start_line":2,"end_line":2}]}` + "\n" + LedgerEndMarker
+	body := LedgerStartMarker + `{"open":[{"path":"a.go","start_line":2,"end_line":2}]}` + LedgerEndMarker
 	got, found, err := ParseLedger(body)
 	if err != nil {
 		t.Fatal(err)
@@ -78,14 +78,14 @@ func TestParseLedgerTolerantOfMissingFields(t *testing.T) {
 }
 
 func TestParseLedgerRejectsUnsupportedNewerVersion(t *testing.T) {
-	body := LedgerStartMarker + "\n" + `{"version":42,"open":[]}` + "\n" + LedgerEndMarker
+	body := LedgerStartMarker + `{"version":42,"open":[]}` + LedgerEndMarker
 	if _, _, err := ParseLedger(body); err == nil {
 		t.Fatal("expected error for unsupported newer ledger version")
 	}
 }
 
 func TestStripLedgerBodyWithBlock(t *testing.T) {
-	body := "intro\n\n<!-- ocr-ledger -->\n{\"version\":1}\n<!-- /ocr-ledger -->"
+	body := "intro\n\n" + LedgerStartMarker + `{"version":1}` + LedgerEndMarker
 	clean, _, found, err := StripLedger(body)
 	if err != nil {
 		t.Fatal(err)
@@ -95,6 +95,64 @@ func TestStripLedgerBodyWithBlock(t *testing.T) {
 	}
 	if clean != "intro" {
 		t.Fatalf("block must be stripped including separator newlines, got %q", clean)
+	}
+}
+
+func TestEncodeLedgerSelfContainedComment(t *testing.T) {
+	// The payload must stay inside one HTML comment line: a start marker
+	// that closes itself would render the JSON as visible Markdown text.
+	block := EncodeLedger(&Ledger{Version: LedgerVersion})
+	if strings.ContainsAny(block, "\n") {
+		t.Fatalf("ledger block must be a single self-contained HTML comment line, got %q", block)
+	}
+	if !strings.HasPrefix(block, "<!--") || !strings.HasSuffix(block, "-->") {
+		t.Fatalf("ledger block must be one HTML comment, got %q", block)
+	}
+}
+
+func TestStripLedgerIgnoresLedgerMarkerQuotedInContent(t *testing.T) {
+	block := EncodeLedger(&Ledger{
+		Version: LedgerVersion,
+		Open:    []LedgerEntry{{Path: "b.go", StartLine: 7, EndLine: 7, Content: "naming"}},
+	})
+	body := "### 📄 `a.go`\n\nquotes the marker: <!-- ocr-ledger -->\n\n" + block
+	clean, l, found, err := StripLedger(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || l == nil || len(l.Open) != 1 || l.Open[0].Path != "b.go" {
+		t.Fatalf("real block (appended last) must win over a marker quoted in content, got found=%v ledger=%+v", found, l)
+	}
+	if !strings.Contains(clean, "quotes the marker") {
+		t.Fatalf("content before the block must be preserved, got %q", clean)
+	}
+}
+
+func TestStripLedgerBlockEmbeddedMidBody(t *testing.T) {
+	body := "first\n\n" + LedgerStartMarker + `{"version":1}` + LedgerEndMarker + "\n\nafter text"
+	clean, _, found, err := StripLedger(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected block to be found")
+	}
+	if want := "first\n\nafter text"; clean != want {
+		t.Fatalf("mid-body block must be stripped and rejoined with a paragraph break, got %q", clean)
+	}
+}
+
+func TestStripLedgerBodyWithBlockAtStart(t *testing.T) {
+	body := LedgerStartMarker + `{"version":1}` + LedgerEndMarker + "\n\nafter text"
+	clean, _, found, err := StripLedger(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected block to be found")
+	}
+	if clean != "after text" {
+		t.Fatalf("block at the very start must leave the following text, got %q", clean)
 	}
 }
 
@@ -113,14 +171,14 @@ func TestStripLedgerBodyWithoutBlock(t *testing.T) {
 }
 
 func TestStripLedgerMalformedBlockReturnsError(t *testing.T) {
-	body := "body\n\n<!-- ocr-ledger -->\n{broken\n<!-- /ocr-ledger -->"
+	body := "body\n\n" + LedgerStartMarker + "{broken" + LedgerEndMarker
 	if _, _, _, err := StripLedger(body); err == nil {
 		t.Fatal("expected error for malformed ledger block")
 	}
 }
 
 func TestStripLedgerTruncatedBlockReturnsError(t *testing.T) {
-	body := "body\n\n<!-- ocr-ledger -->\n{\"version\":1}"
+	body := "body\n\n" + LedgerStartMarker + `{"version":1}`
 	_, _, _, err := StripLedger(body)
 	if err == nil {
 		t.Fatal("expected error for truncated ledger block")
@@ -137,7 +195,7 @@ func TestFormatLedgerSectionsOpenAndResolved(t *testing.T) {
 	}
 	resolved := []LedgerEntry{{Path: "m.go", StartLine: 3, EndLine: 4, FirstSeen: "run-1", ResolvedIn: "run-2", ResolvedDate: "2026-10-14", Content: "mid"}}
 	out := FormatLedgerSections(open, resolved)
-	if !strings.Contains(out, "2") || !strings.Contains(out, "still open") {
+	if !strings.Contains(out, "still open: 2") {
 		t.Fatalf("open section must state the open count: %q", out)
 	}
 	for _, want := range []string{"`z.go`", "`a.go`", "(L1)", "(L5-L9)", "alpha", "zeta", "`m.go`", "(L3-L4)", "run-2", "2026-10-14"} {

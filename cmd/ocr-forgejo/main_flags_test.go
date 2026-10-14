@@ -185,10 +185,24 @@ func TestValidateOverlapThresholdRangeForTracking(t *testing.T) {
 		v      float64
 		wantOK bool
 	}{{0.6, true}, {0, false}, {1, false}, {1.5, false}} {
-		c := &Config{URL: "https://x", Repo: "o/r", PRIndex: 1, ResolutionTracking: true, IncrementalOverlapThresh: tc.v}
+		c := &Config{URL: "https://x", Repo: "o/r", PRIndex: 1, StickySummary: true, ResolutionTracking: true, IncrementalOverlapThresh: tc.v}
 		err := c.validate(fs)
 		if tc.wantOK != (err == nil) {
 			t.Fatalf("validate(%v, tracking) err = %v, wantOK = %v", tc.v, err, tc.wantOK)
 		}
+	}
+}
+
+func TestValidateRejectsResolutionTrackingWithoutStickySummary(t *testing.T) {
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	// The ledger persists only in the sticky summary; without it every run
+	// looks for a per-run marker keyed on the head SHA and starts fresh.
+	c := &Config{URL: "https://x", Repo: "o/r", PRIndex: 1, StickySummary: false, ResolutionTracking: true, IncrementalOverlapThresh: 0.6}
+	if err := c.validate(fs); err == nil {
+		t.Fatal("--resolution-tracking without --sticky-summary=false must be rejected")
+	}
+	sticky := &Config{URL: "https://x", Repo: "o/r", PRIndex: 1, StickySummary: true, ResolutionTracking: true, IncrementalOverlapThresh: 0.6}
+	if err := sticky.validate(fs); err != nil {
+		t.Fatalf("tracking with sticky summary must validate: %v", err)
 	}
 }
