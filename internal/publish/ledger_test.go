@@ -324,3 +324,64 @@ func TestPublishTrackingDisabledStripsLegacyLedgerAndMatchesClassicBody(t *testi
 		t.Fatalf("tracking-off summary must be byte-identical to the classic format:\nwant %q\ngot  %q", b2, b1)
 	}
 }
+
+func TestPublishTracksPostedFindingsThenResolves(t *testing.T) {
+	// Run 1: one posting-eligible finding, posted inline.
+	f1 := newFake()
+	stats1, err := Publish(result(c("a.go", 1, 1, "high")), f1, Options{RunTag: "run-1", CommitID: "s", Sticky: true, ResolutionTracking: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats1.Inline != 1 || stats1.Resolved != 0 {
+		t.Fatalf("run 1 must post 1 inline and resolve none, got %+v", stats1)
+	}
+	summary1 := finalSummaryBody(f1)
+	_, l1, found1, err := format.StripLedger(summary1)
+	if err != nil || !found1 {
+		t.Fatalf("run 1 summary must embed the ledger: found=%v err=%v", found1, err)
+	}
+	if len(l1.Open) != 1 || l1.Open[0].Path != "a.go" || l1.Open[0].FirstSeen != "run-1" {
+		t.Fatalf("run 1 ledger must open the posted finding, got %+v", l1)
+	}
+
+	// Run 2: same PR, the finding is fixed (zero results) -> resolved.
+	f2 := newFake()
+	f2.issueComments = []poster.IssueCommentInfo{{ID: 71, Body: summary1}}
+	stats2, err := Publish(result(), f2, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats2.Resolved != 1 {
+		t.Fatalf("run 2 must resolve the open entry, got %d", stats2.Resolved)
+	}
+	summary2 := finalSummaryBody(f2)
+	if !strings.Contains(summary2, "Resolved **1** finding(s) in this run") {
+		t.Fatalf("run 2 summary must report the resolution, got %q", summary2)
+	}
+	_, l2, found2, err := format.StripLedger(summary2)
+	if err != nil || !found2 {
+		t.Fatalf("run 2 summary must embed the ledger: found=%v err=%v", found2, err)
+	}
+	if len(l2.Open) != 0 || len(l2.Resolved) != 1 || l2.Resolved[0].ResolvedIn != "run-2" || l2.Resolved[0].ResolvedDate == "" {
+		t.Fatalf("run 2 ledger must hold the resolved entry, got %+v", l2)
+	}
+}
+
+func TestPublishFailedAndRoutedCommentsStayOutOfLedger(t *testing.T) {
+	f := newFake()
+	f.createErr = errors.New("review boom")
+	stats, err := Publish(result(c("a.go", 1, 1, "low")), f, Options{RunTag: "t", CommitID: "s", Sticky: true, ResolutionTracking: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Failed != 1 {
+		t.Fatalf("expected the comment to fail, got %+v", stats)
+	}
+	_, l, found, err := format.StripLedger(finalSummaryBody(f))
+	if err != nil || !found {
+		t.Fatalf("summary must embed the ledger, found=%v err=%v", found, err)
+	}
+	if len(l.Open) != 0 {
+		t.Fatalf("failed comments must not enter the ledger, got %+v", l)
+	}
+}

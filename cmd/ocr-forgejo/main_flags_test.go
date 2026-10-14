@@ -122,6 +122,32 @@ func TestParseFlagsApproveBelowCustom(t *testing.T) {
 	}
 }
 
+func TestParseFlagsResolutionTrackingDefaultOff(t *testing.T) {
+	cfg, err := ParseFlags([]string{
+		"--url", "https://forge.example.com", "--repo", "o/r", "--pr", "1",
+		"/tmp/result.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ResolutionTracking {
+		t.Fatalf("--resolution-tracking must default to false, cfg = %+v", cfg)
+	}
+}
+
+func TestParseFlagsResolutionTrackingEnabled(t *testing.T) {
+	cfg, err := ParseFlags([]string{
+		"--url", "https://forge.example.com", "--repo", "o/r", "--pr", "1",
+		"--resolution-tracking", "/tmp/result.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.ResolutionTracking {
+		t.Fatalf("--resolution-tracking must opt in, cfg = %+v", cfg)
+	}
+}
+
 func TestParseFlagsRejectsRemovedFailOnSeverity(t *testing.T) {
 	// --fail-on-severity was removed; it must be rejected as unknown.
 	if _, err := ParseFlags([]string{
