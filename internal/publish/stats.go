@@ -17,6 +17,7 @@ func WriteStatsFile(path string, stats *Stats) error {
 		fmt.Sprintf("OCR_COMMENTS_ROUTED=%d", stats.Routed),
 		fmt.Sprintf("OCR_COMMENTS_SKIPPED=%d", stats.Skipped),
 		fmt.Sprintf("OCR_COMMENTS_FAILED=%d", stats.Failed),
+		fmt.Sprintf("OCR_FINDINGS_RESOLVED=%d", stats.Resolved),
 		fmt.Sprintf("OCR_SUMMARY_URL=%s", stats.SummaryURL),
 	}
 	if dir := filepath.Dir(path); dir != "" && dir != "." {

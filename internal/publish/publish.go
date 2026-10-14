@@ -203,6 +203,11 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 		}
 	})
 
+	// Inline candidates for resolution tracking: everything eligible for
+	// inline posting, captured before incremental and diff pre-filtering so
+	// a finding still reported by OCR never resolves its ledger entry.
+	candidates := inline
+
 	// Incremental filtering: drop comments overlapping prior bot comments.
 	if opts.Incremental && len(inline) > 0 {
 		history, err := loadHistory(p)
@@ -248,6 +253,14 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 			keep = append(keep, it)
 		}
 		inline = keep
+	}
+
+	// Prior ledger state must be read before the anchor flow can create
+	// this run's own summary comment, which would shadow the genuine
+	// prior-run summary comment.
+	var priorLedger *format.Ledger
+	if opts.ResolutionTracking {
+		priorLedger = loadLedger(p, opts)
 	}
 
 	// Idempotent retry cleanup: delete stale pending reviews of this bot.
@@ -310,8 +323,21 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 	}
 	stats.Failed = len(failed)
 
+	// Resolution tracking: fold the run's inline findings into the ledger
+	// after the review submit settled, before rendering the final summary.
+	var resolutions []format.LedgerEntry
+	var mergedLedger *format.Ledger
+	if opts.ResolutionTracking {
+		addSet := inline
+		if stats.Inline != len(inline) {
+			addSet = nil // nothing was actually posted: no entries added (D3)
+		}
+		mergedLedger, resolutions = mergeLedger(priorLedger, candidates, addSet, opts.RunTag, resolvedToday(), opts.OverlapThresh)
+		stats.Resolved = len(resolutions)
+	}
+
 	// Finalize the summary.
-	finalBody := finalizeBody(opts, stats, noLine, routed, failed, inline, result.Warnings)
+	finalBody := finalizeBody(opts, stats, noLine, routed, failed, inline, result.Warnings, mergedLedger, resolutions)
 	stats.SummaryURL = upsertSummary(p, opts, anchor, finalBody)
 	if stats.State == "" {
 		// No inline review was attempted: decide from the posting outcome.
@@ -483,7 +509,7 @@ func upsertSummary(p poster.Poster, opts Options, anchor int64, body string) str
 	return fmt.Sprintf("comment:%d", id)
 }
 
-func finalizeBody(opts Options, stats *Stats, noLine, routed []format.SummaryItem, failed []failedItem, posted []inlineItem, warnings []review.Warning) string {
+func finalizeBody(opts Options, stats *Stats, noLine, routed []format.SummaryItem, failed []failedItem, posted []inlineItem, warnings []review.Warning, ledger *format.Ledger, resolutions []format.LedgerEntry) string {
 	body := format.BuildSummaryBody(stats.Total, stats.Inline, stats.Summary, stats.Skipped, stats.Routed, stats.Failed, len(warnings))
 	body += format.FormatSummaryComments(noLine, opts.Suggestions)
 	body += format.FormatSummaryComments(routed, opts.Suggestions)
@@ -494,5 +520,11 @@ func finalizeBody(opts Options, stats *Stats, noLine, routed []format.SummaryIte
 		body += "\n\n---\n\nℹ️ All inline comments overlapped with existing reviews; nothing new was posted."
 	}
 	body += format.FormatWarnings(warnings)
+	if ledger != nil {
+		// Open and resolved findings as distinct sections, then the
+		// machine-readable ledger state for the next run.
+		body += format.FormatLedgerSections(ledger.Open, resolutions)
+		body += "\n" + format.EncodeLedger(ledger)
+	}
 	return format.WrapSummaryBody(body, opts.RunTag)
 }

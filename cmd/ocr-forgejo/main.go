@@ -33,6 +33,7 @@ type Config struct {
 	ApproveBelow             string
 	RunTag                   string
 	Suggestions              bool
+	ResolutionTracking       bool
 }
 
 const (
@@ -61,6 +62,7 @@ func ParseFlags(args []string) (*Config, error) {
 	fs.StringVar(&cfg.ApproveBelow, "approve-below", "low", "findings above this severity block approval; the named severity and below approve")
 	fs.StringVar(&cfg.RunTag, "run-tag", "", "per-run identity for idempotency tags (default: <pr>-<head sha>)")
 	fs.BoolVar(&cfg.Suggestions, "suggestions", true, "include Before/After suggestion blocks in comment bodies")
+	fs.BoolVar(&cfg.ResolutionTracking, "resolution-tracking", false, "maintain an open/resolved findings ledger in the sticky summary across runs")
 
 	if err := fs.Parse(reorderArgs(args, boolFlags(fs))); err != nil {
 		return nil, err
@@ -221,14 +223,15 @@ func run(cfg *Config) int {
 
 	commitID := result.Manifest.Input.ResolvedHead
 	stats, err := publish.Publish(result, p, publish.Options{
-		RunTag:        runTag,
-		Sticky:        cfg.StickySummary,
-		Incremental:   cfg.Incremental,
-		OverlapThresh: cfg.IncrementalOverlapThresh,
-		Route:         policy.Build(cfg.RouteSeverityBelow, cfg.RouteCategories),
-		CommitID:      commitID,
-		Suggestions:   cfg.Suggestions,
-		ApproveBelow:  cfg.ApproveBelow,
+		RunTag:             runTag,
+		Sticky:             cfg.StickySummary,
+		Incremental:        cfg.Incremental,
+		OverlapThresh:      cfg.IncrementalOverlapThresh,
+		Route:              policy.Build(cfg.RouteSeverityBelow, cfg.RouteCategories),
+		CommitID:           commitID,
+		Suggestions:        cfg.Suggestions,
+		ApproveBelow:       cfg.ApproveBelow,
+		ResolutionTracking: cfg.ResolutionTracking,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -241,8 +244,8 @@ func run(cfg *Config) int {
 	if err := publish.WriteStatsFile(cfg.StatsFilePath, stats); err != nil {
 		fmt.Fprintln(os.Stderr, "warning: could not write stats file:", err)
 	}
-	log.Printf("posted %d/%d inline, %d summary, %d routed, %d skipped, %d failed (total %d): %s",
-		stats.Inline, stats.Total, stats.Summary, stats.Routed, stats.Skipped, stats.Failed, stats.Total, stats.State)
+	log.Printf("posted %d/%d inline, %d summary, %d routed, %d skipped, %d failed, %d resolved (total %d): %s",
+		stats.Inline, stats.Total, stats.Summary, stats.Routed, stats.Skipped, stats.Failed, stats.Resolved, stats.Total, stats.State)
 	return 0
 }
 

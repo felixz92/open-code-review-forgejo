@@ -155,5 +155,5 @@ func trackedNoIssuesBody(p poster.Poster, opts Options, message string) (string,
 	if len(thisRun) > 0 {
 		content += format.FormatLedgerSections(nil, thisRun)
 	}
-	return format.WrapSummaryBody(content, opts.RunTag) + "\n" + format.EncodeLedger(merged), len(thisRun)
+	return format.WrapSummaryBody(content+"\n"+format.EncodeLedger(merged), opts.RunTag), len(thisRun)
 }
