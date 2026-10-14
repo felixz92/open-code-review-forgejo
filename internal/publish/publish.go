@@ -165,6 +165,7 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 	var inline []inlineItem
 	var noLine []format.SummaryItem
 	var routed []format.SummaryItem
+	var routedCands []inlineItem
 	for i := range result.Comments {
 		c := &result.Comments[i]
 		hasLine := c.EndLine >= 1 && c.Path != ""
@@ -174,6 +175,7 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 		}
 		if res := policy.Route(c, opts.Route); res.Routed {
 			routed = append(routed, format.SummaryItem{Comment: c, Reason: res.Reason})
+			routedCands = append(routedCands, inlineItem{comment: c, span: incremental.NewSpan(c.StartLine, c.EndLine)})
 			continue
 		}
 		id := newCommentID(opts.RunTag)
@@ -203,10 +205,15 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 		}
 	})
 
-	// Inline candidates for resolution tracking: everything eligible for
-	// inline posting, captured before incremental and diff pre-filtering so
-	// a finding still reported by OCR never resolves its ledger entry.
-	candidates := inline
+	// Resolution-tracking candidates: every finding with usable line
+	// evidence the run reported for inline posting or routed to the
+	// summary, captured before incremental and diff pre-filtering. A
+	// finding still reported by OCR never resolves its ledger entry, and
+	// only successfully posted findings create entries (matched-only
+	// items can only keep existing entries open).
+	candidates := make([]inlineItem, 0, len(inline)+len(routedCands))
+	candidates = append(candidates, inline...)
+	candidates = append(candidates, routedCands...)
 
 	// Incremental filtering: drop comments overlapping prior bot comments.
 	if opts.Incremental && len(inline) > 0 {

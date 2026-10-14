@@ -33,16 +33,17 @@ func snippet(content string) string {
 // match no entry are added as new open entries; open entries matched by no
 // current finding move to the resolved list with the resolution stamp
 // (design D2/D3). The resolved list is pruned to MaxResolvedEntries.
-// mergeLedger folds the current run's inline findings into the prior ledger
-// and returns the merged ledger plus the entries this run resolved. Matching
-// reuses the incremental span semantics over the run's inline candidates
-// (posted findings plus incrementally skipped and unpostable ones: a finding
-// still present in the results never resolves its entry — design D2/D3 and
-// the spec's "fixed finding is marked resolved" scenario). Candidates that
-// match no entry keep their findings open; only successfully posted findings
-// are added as new open entries (design D3). Open entries matched by no
-// candidate move to the resolved list with the resolution stamp; the
-// resolved list is pruned to MaxResolvedEntries.
+// mergeLedger folds the current run's inline candidates into the prior
+// ledger and returns the merged ledger plus the entries this run resolved
+// (design D2/D3; the spec's "fixed finding is marked resolved" scenario keys
+// resolution on the run's results, not posting success). Span matching
+// reuses the incremental semantics, path-scoped: single-line exact, multi-line
+// IoU strictly above the threshold. A candidate that matches an open entry
+// keeps it open, refreshing the recorded span and wording; a candidate that
+// matches nothing creates a new open entry exactly when it was successfully
+// posted. Open entries matched by no candidate move to the resolved list
+// with the resolution stamp; the resolved list is pruned to
+// MaxResolvedEntries.
 func mergeLedger(prior *format.Ledger, candidates, posted []inlineItem, runTag, resolvedDate string, thresh float64) (*format.Ledger, []format.LedgerEntry) {
 	if prior == nil {
 		prior = &format.Ledger{Version: format.LedgerVersion}
