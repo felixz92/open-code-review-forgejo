@@ -47,6 +47,9 @@ func TestWriteStatsFileZeroFilled(t *testing.T) {
 	if !strings.Contains(string(data), "OCR_COMMENTS_TOTAL=0") || !strings.Contains(string(data), "OCR_SUMMARY_URL=") {
 		t.Fatalf("zero stats not written: %q", data)
 	}
+	if !strings.Contains(string(data), "OCR_FINDINGS_RESOLVED=0") {
+		t.Fatalf("resolved count must be zero-filled: %q", data)
+	}
 }
 
 func TestWriteStatsFileIncludesResolvedCount(t *testing.T) {

@@ -14,7 +14,7 @@ The sticky summary (`<!-- ocr-summary -->` marker) is already created once and u
 
 **Non-Goals:**
 - Resolving Forgejo conversations via API (deferred until Forgejo ships resolve/unresolve endpoints; a future change will add the probe + Poster methods and can then reconcile ledger state with real conversation resolution)
-- Tracking failed, routed, or no-line comments
+- Creating ledger entries for failed, routed, or no-line comments
 - Per-comment replies, reactions, or edits to past reviews
 - Persisting ledger state anywhere other than the summary comment
 
@@ -39,7 +39,7 @@ Ledger matching uses `incremental.Span` / `SameCommentSpan` with the same defaul
 
 An entry is created only after the review submit succeeds, from the posted set. Failed/routed/no-line comments are transient reporting, not findings with a lifecycle to track.
 
-- *Why*: keeps the ledger a promise ("this was flagged inline and is still open"), avoids resolving entries for comments that never landed.
+- *Why*: keeps the ledger a promise ("this was flagged inline and is still open"), avoids resolving entries for comments that never landed, and avoids creating entries for findings the run could not post. Matching still counts non-posted candidates (incrementally skipped, pre-check dropped, submit-failed, routed) toward keep-open; they never create entries, so a finding the run still reports does not lose its entry.
 - Note: this means ledger population happens after `SubmitPullReview`, using the same `inline` slice that produced the posted comments.
 
 ### D4: Flag-gated, default off
