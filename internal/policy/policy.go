@@ -116,3 +116,17 @@ func SeverityAtOrAbove(c *review.Comment, threshold string) bool {
 	r, ok := severityRank[sev]
 	return ok && r >= t
 }
+
+// SeverityAbove reports whether c's severity ranks strictly above the given
+// approval threshold (--approve-below value): the threshold severity and
+// everything below it does not count. An unknown threshold fails safe by
+// ranking below `low`, so every known-severity comment counts as a blocking
+// finding (a typoed flag must not approve a broken PR). A comment with an
+// unknown severity never counts.
+func SeverityAbove(c *review.Comment, threshold string) bool {
+	threshold = strings.ToLower(strings.TrimSpace(threshold))
+	t := severityRank[threshold] // 0 (below low) when unknown: fail-safe
+	sev := strings.ToLower(strings.TrimSpace(c.Severity))
+	r, ok := severityRank[sev]
+	return ok && r > t
+}

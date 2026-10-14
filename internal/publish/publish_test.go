@@ -28,7 +28,9 @@ type fakePoster struct {
 	createdComments []poster.ReviewCommentInput
 	createdCommitID string
 	submitted       []string
+	submitStates    []string
 	submitBody      string
+	submitErr       error
 	deletedReviews  []int64
 	createdSummary  []string
 	editedSummary   map[int64]string
@@ -39,6 +41,10 @@ func newFake() *fakePoster {
 }
 
 func (f *fakePoster) CreatePullReview(comments []poster.ReviewCommentInput, commitID string) (int64, error) {
+	if commitID == "" {
+		// Server contract: an empty commit makes the batch call fail.
+		return 0, fmt.Errorf("empty commit id")
+	}
 	if f.createErr != nil {
 		return 0, f.createErr
 	}
@@ -46,10 +52,11 @@ func (f *fakePoster) CreatePullReview(comments []poster.ReviewCommentInput, comm
 	f.createdCommitID = commitID
 	return 101, nil
 }
-func (f *fakePoster) SubmitPullReview(reviewID int64, body string) error {
+func (f *fakePoster) SubmitPullReview(reviewID int64, state, body string) error {
 	f.submitted = append(f.submitted, fmt.Sprint(reviewID))
+	f.submitStates = append(f.submitStates, state)
 	f.submitBody = body
-	return nil
+	return f.submitErr
 }
 func (f *fakePoster) DeletePullReview(reviewID int64) error {
 	f.deletedReviews = append(f.deletedReviews, reviewID)
@@ -266,6 +273,7 @@ func TestPublishStickySummaryUpdatesInPlace(t *testing.T) {
 
 func TestPublishNoCommentsLGTM(t *testing.T) {
 	f := newFake()
+	f.headSHA = "head123"
 	stats, err := Publish(result(), f, Options{RunTag: "t"})
 	if err != nil {
 		t.Fatal(err)
@@ -273,11 +281,259 @@ func TestPublishNoCommentsLGTM(t *testing.T) {
 	if stats.Total != 0 || stats.Inline != 0 {
 		t.Fatalf("stats = %+v", stats)
 	}
-	if len(f.createdComments) != 0 || len(f.submitted) != 0 {
-		t.Fatal("no review must be created without comments")
+	// The empty approval review: no inline comments, resolved commit.
+	if len(f.createdComments) != 0 || f.createdCommitID != "head123" {
+		t.Fatalf("empty review must be created at the PR head: %+v commit=%q", f.createdComments, f.createdCommitID)
+	}
+	if len(f.submitStates) != 1 || f.submitStates[0] != StateApproved {
+		t.Fatalf("submit states = %v, want [APPROVED]", f.submitStates)
+	}
+	if stats.State != StateApproved {
+		t.Fatalf("stats.State = %q, want APPROVED", stats.State)
 	}
 	if !strings.Contains(f.createdSummary[0], "✅") {
 		t.Fatalf("LGTM summary expected, got %q", f.createdSummary[0])
+	}
+}
+
+func TestPublishNoCommentsExplicitCommit(t *testing.T) {
+	f := newFake()
+	stats, err := Publish(result(), f, Options{RunTag: "t", CommitID: "sha1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.createdCommitID != "sha1" {
+		t.Fatalf("commit = %q, want the configured --commit-id", f.createdCommitID)
+	}
+	if stats.State != StateApproved {
+		t.Fatalf("stats.State = %q, want APPROVED", stats.State)
+	}
+}
+
+func TestPublishNoCommentsCreationFailureLogsAndContinues(t *testing.T) {
+	f := newFake()
+	f.createErr = fmt.Errorf("500: boom")
+	stats, err := Publish(result(), f, Options{RunTag: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.State != StateComment {
+		t.Fatalf("stats.State = %q, want COMMENT after creation failure", stats.State)
+	}
+	if len(f.createdSummary) != 1 || !strings.Contains(f.createdSummary[0], "✅") {
+		t.Fatalf("LGTM summary must still publish, got %v", f.createdSummary)
+	}
+	if len(f.submitStates) != 0 {
+		t.Fatalf("nothing may be submitted when creation failed: %v", f.submitStates)
+	}
+}
+
+func TestPublishNoCommentsSubmitFailureRecordsComment(t *testing.T) {
+	f := newFake()
+	f.submitErr = fmt.Errorf("403: self-approval refused")
+	stats, err := Publish(result(), f, Options{RunTag: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.State != StateComment {
+		t.Fatalf("stats.State = %q, want COMMENT after submit failure", stats.State)
+	}
+	if len(f.createdSummary) != 1 || !strings.Contains(f.createdSummary[0], "✅") {
+		t.Fatalf("LGTM summary must still publish, got %v", f.createdSummary)
+	}
+	if len(f.deletedReviews) != 0 {
+		t.Fatalf("no pending review to delete: %v", f.deletedReviews)
+	}
+}
+
+func TestPublishFindingsSubmitRequestChanges(t *testing.T) {
+	f := newFake()
+	r := result(c("a.go", 1, 2, "low"), c("b.go", 1, 1, "high"))
+	stats, err := Publish(r, f, Options{RunTag: "t", CommitID: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.submitStates) != 1 || f.submitStates[0] != StateRequestChanges {
+		t.Fatalf("submit states = %v, want [REQUEST_CHANGES]", f.submitStates)
+	}
+	if stats.State != StateRequestChanges {
+		t.Fatalf("stats.State = %q, want REQUEST_CHANGES", stats.State)
+	}
+}
+
+func TestPublishLowOnlySubmitsApproved(t *testing.T) {
+	f := newFake()
+	stats, err := Publish(result(c("a.go", 1, 2, "low")), f, Options{RunTag: "t", CommitID: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.submitStates) != 1 || f.submitStates[0] != StateApproved {
+		t.Fatalf("submit states = %v, want [APPROVED]", f.submitStates)
+	}
+	if stats.State != StateApproved {
+		t.Fatalf("stats.State = %q, want APPROVED", stats.State)
+	}
+	if stats.Inline != 1 {
+		t.Fatalf("inline comment must still post: %+v", stats)
+	}
+}
+
+func TestPublishDefaultApproveBelowIsLow(t *testing.T) {
+	// Zero-value Options must behave like the CLI default --approve-below low:
+	// a low finding does not block, medium and above do.
+	f := newFake()
+	stats, err := Publish(result(c("a.go", 1, 1, "medium")), f, Options{RunTag: "t", CommitID: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.State != StateRequestChanges {
+		t.Fatalf("empty ApproveBelow must default to low: state = %q", stats.State)
+	}
+}
+
+func TestPublishRoutedFindingRequestsChanges(t *testing.T) {
+	// Routed findings still count: no inline review is created, the summary
+	// posts, and the run requests changes.
+	f := newFake()
+	r := result(c("a.go", 1, 2, "medium"))
+	stats, err := Publish(r, f, Options{
+		RunTag: "t", CommitID: "s",
+		Route: policy.Build("medium", ""),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Routed != 1 || stats.Inline != 0 {
+		t.Fatalf("comment must be routed only: %+v", stats)
+	}
+	if len(f.createdComments) != 0 {
+		t.Fatalf("routed findings must not create a review, got %+v", f.createdComments)
+	}
+	if stats.State != StateRequestChanges {
+		t.Fatalf("routed finding must still request changes: %q", stats.State)
+	}
+}
+
+func TestPublishSkippedFindingRequestsChanges(t *testing.T) {
+	// Incremental skips are presentation: the skipped finding still counts.
+	f := newFake()
+	f.reviews = []poster.ReviewInfo{{ID: 9, State: "COMMENT", Reviewer: "ci-bot"}}
+	f.reviewComments[9] = []poster.ReviewCommentInfo{
+		{Body: format.BotMarker + " old -->\n> File `a.go` lines 1-2", Path: "a.go", NewLine: 2},
+	}
+	stats, err := Publish(result(c("a.go", 1, 2, "high")), f, Options{RunTag: "t", CommitID: "s", Incremental: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Skipped != 1 || stats.Inline != 0 {
+		t.Fatalf("stats = %+v", stats)
+	}
+	if stats.State != StateRequestChanges {
+		t.Fatalf("skipped finding must still request changes: %q", stats.State)
+	}
+}
+
+func TestPublishSubmitFailureRecordsComment(t *testing.T) {
+	f := newFake()
+	f.submitErr = fmt.Errorf("403: self-approval refused")
+	stats, err := Publish(result(c("a.go", 1, 2, "low"), c("b.go", 1, 1, "high")), f, Options{RunTag: "t", CommitID: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.State != StateComment {
+		t.Fatalf("stats.State = %q, want COMMENT after submit failure", stats.State)
+	}
+	// The submit attempt still carried the computed state before failing.
+	if len(f.submitStates) != 1 || f.submitStates[0] != StateRequestChanges {
+		t.Fatalf("submit states = %v, want [REQUEST_CHANGES]", f.submitStates)
+	}
+	if len(f.deletedReviews) != 1 || f.deletedReviews[0] != 101 {
+		t.Fatalf("pending review must be deleted, got %v", f.deletedReviews)
+	}
+	if !strings.Contains(f.editedSummary[55], "review submit failed") {
+		t.Fatal("failed comments must be reported in the summary")
+	}
+}
+
+func TestPublishCreateFailureRecordsComment(t *testing.T) {
+	f := newFake()
+	f.createErr = fmt.Errorf("422: commit sha does not exist")
+	stats, err := Publish(result(c("a.go", 1, 2, "low")), f, Options{RunTag: "t", CommitID: "stale-sha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.State != StateComment {
+		t.Fatalf("stats.State = %q, want COMMENT after creation failure", stats.State)
+	}
+	if len(f.submitStates) != 0 {
+		t.Fatalf("nothing may be submitted when creation failed: %v", f.submitStates)
+	}
+	if !strings.Contains(f.editedSummary[55], "stale-sha") {
+		t.Fatal("failed comments must be reported in the summary")
+	}
+}
+
+func TestPublishCommitUnresolvableRecordsComment(t *testing.T) {
+	// Neither --commit-id nor the PR head resolve: no review is created and
+	// the state is recorded as COMMENT.
+	f := newFake()
+	stats, err := Publish(result(c("a.go", 1, 2, "medium")), f, Options{RunTag: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.State != StateComment {
+		t.Fatalf("stats.State = %q, want COMMENT when commit cannot be resolved", stats.State)
+	}
+	if len(f.createdComments) != 0 || len(f.submitted) != 0 {
+		t.Fatalf("no review may be created or submitted: %+v", f.createdComments)
+	}
+	if stats.Failed != 1 || !strings.Contains(f.editedSummary[55], "could not resolve reviewed commit") {
+		t.Fatalf("comments must fail to the summary: %+v", stats)
+	}
+}
+
+func TestDecideState(t *testing.T) {
+	// Every scenario from specs/ocr-forgejo-review-state/spec.md's
+	// "Review state decision" requirement plus threshold edge cases.
+	tests := []struct {
+		name         string
+		comments     []review.Comment
+		approveBelow string
+		posted       bool
+		want         string
+	}{
+		{"clean result approves", nil, "low", false, StateApproved},
+		{"zero findings approve with posting success", nil, "low", true, StateApproved},
+		{"low-only result approves", []review.Comment{c("a.go", 1, 1, "low"), c("b.go", 1, 2, "low")}, "low", true, StateApproved},
+		{"empty threshold fails safe: low blocks", []review.Comment{c("a.go", 1, 1, "low")}, "", true, StateRequestChanges},
+		{"finding requests changes", []review.Comment{c("a.go", 1, 1, "medium")}, "low", true, StateRequestChanges},
+		{"finding at threshold does not block", []review.Comment{c("a.go", 1, 1, "medium")}, "medium", true, StateApproved},
+		{"posted=false with findings comments", []review.Comment{c("a.go", 1, 1, "high")}, "low", false, StateComment},
+		{"routed findings still count", []review.Comment{c("a.go", 1, 1, "medium")}, "low", true, StateRequestChanges},
+		{"skipped findings still count", []review.Comment{c("a.go", 1, 1, "high")}, "low", true, StateRequestChanges},
+		{"malformed threshold fails safe to comment", []review.Comment{c("a.go", 1, 1, "low")}, "banana", true, StateRequestChanges},
+		{"malformed threshold with findings blocks", []review.Comment{c("a.go", 1, 1, "low")}, "banana", false, StateComment},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := decideState(result(tc.comments...), tc.approveBelow, tc.posted)
+			if got != tc.want {
+				t.Fatalf("decideState = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDecideStateFailsSafeOnMalformedThreshold(t *testing.T) {
+	// Malformed --approve-below must not approve anything but a comment-free
+	// result: any known-severity comment blocks, even `low`.
+	r := result(c("a.go", 1, 1, "low"))
+	if got := decideState(r, "banana", true); got != StateRequestChanges {
+		t.Fatalf("malformed threshold must not approve findings, got %q", got)
+	}
+	empty := decideState(result(), "banana", true)
+	if empty != StateApproved {
+		t.Fatalf("comment-free result must still approve, got %q", empty)
 	}
 }
 
