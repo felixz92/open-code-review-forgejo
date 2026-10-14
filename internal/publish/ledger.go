@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/felixz92/open-code-review-forgejo/internal/format"
 	"github.com/felixz92/open-code-review-forgejo/internal/incremental"
@@ -135,4 +136,24 @@ func loadLedger(p poster.Poster, opts Options) *format.Ledger {
 		return ledger
 	}
 	return freshLedger()
+}
+
+// resolvedToday is the resolution date stamp for entries resolved this run.
+func resolvedToday() string {
+	return time.Now().UTC().Format("2006-01-02")
+}
+
+// trackedNoIssuesBody builds the clean-run summary body under resolution
+// tracking. A non-empty open ledger resolves all entries and notes the
+// resolutions instead of presenting a bare no-issues body; an empty ledger
+// keeps the existing no-issues body. Either way the merged ledger is
+// re-embedded so retained state survives the summary rewrite.
+func trackedNoIssuesBody(p poster.Poster, opts Options, message string) (string, int) {
+	prior := loadLedger(p, opts)
+	merged, thisRun := mergeLedger(prior, nil, nil, opts.RunTag, resolvedToday(), opts.OverlapThresh)
+	content := format.BuildNoIssuesBody(message)
+	if len(thisRun) > 0 {
+		content += format.FormatLedgerSections(nil, thisRun)
+	}
+	return format.WrapSummaryBody(content, opts.RunTag) + "\n" + format.EncodeLedger(merged), len(thisRun)
 }

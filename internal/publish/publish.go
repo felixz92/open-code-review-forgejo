@@ -37,6 +37,9 @@ type Options struct {
 	// Fail safe: unknown thresholds and unranked comment severities both
 	// count as blocking findings.
 	ApproveBelow string
+	// ResolutionTracking maintains the cross-run findings ledger in the
+	// sticky summary (opt-in via --resolution-tracking).
+	ResolutionTracking bool
 	// GetDiff is used by tests via the Poster interface; no extra fields.
 }
 
@@ -49,12 +52,16 @@ const (
 
 // Stats holds mutually exclusive posting counts.
 type Stats struct {
-	Total      int
-	Inline     int
-	Summary    int
-	Skipped    int
-	Routed     int
-	Failed     int
+	Total   int
+	Inline  int
+	Summary int
+	Skipped int
+	Routed  int
+	Failed  int
+	// Resolved counts open ledger entries this run marked resolved
+	// (cross-run resolution tracking; deliberately outside the
+	// OCR_COMMENTS_* total partition, design D7).
+	Resolved   int
 	SummaryURL string
 	// State is the review state the run derived (APPROVED when no findings
 	// block approval, REQUEST_CHANGES when findings posted successfully,
@@ -142,7 +149,15 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 			stats.State = StateApproved
 		}
 		anchor := findSummaryComment(p, opts)
-		stats.SummaryURL = upsertSummary(p, opts, anchor, format.WrapSummaryBody(format.BuildNoIssuesBody(message), opts.RunTag))
+		body := format.WrapSummaryBody(format.BuildNoIssuesBody(message), opts.RunTag)
+		if opts.ResolutionTracking {
+			// A non-empty open ledger resolves all entries and reports
+			// the resolutions; an empty ledger keeps the classic body.
+			var resolved int
+			body, resolved = trackedNoIssuesBody(p, opts, message)
+			stats.Resolved = resolved
+		}
+		stats.SummaryURL = upsertSummary(p, opts, anchor, body)
 		return stats, nil
 	}
 
