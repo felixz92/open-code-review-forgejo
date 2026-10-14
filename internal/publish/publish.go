@@ -32,8 +32,19 @@ type Options struct {
 	// Suggestions controls whether suggestion blocks are rendered into
 	// inline and summary-fallback comment bodies.
 	Suggestions bool
+	// ApproveBelow is the highest severity that does not block approval:
+	// findings above it force REQUEST_CHANGES. Empty defaults to "low";
+	// unknown values fail safe (all findings block).
+	ApproveBelow string
 	// GetDiff is used by tests via the Poster interface; no extra fields.
 }
+
+// Review states submitted to Forgejo, as sent in the review event.
+const (
+	StateApproved       = "APPROVED"
+	StateRequestChanges = "REQUEST_CHANGES"
+	StateComment        = "COMMENT"
+)
 
 // Stats holds mutually exclusive posting counts.
 type Stats struct {
@@ -44,6 +55,10 @@ type Stats struct {
 	Routed     int
 	Failed     int
 	SummaryURL string
+	// State is the review state the run derived (APPROVED when no findings
+	// block approval, REQUEST_CHANGES when findings posted successfully,
+	// COMMENT when posting failed).
+	State string
 }
 
 type inlineItem struct {
@@ -58,18 +73,62 @@ type failedItem struct {
 	reason  string
 }
 
+const defaultApproveBelow = "low"
+
+// countFindings counts result-JSON comments at severity ranks above the
+// approval threshold. Routing and incremental skipping never influence the
+// count: presentation must not change the verdict.
+func countFindings(result *review.Result, approveBelow string) int {
+	n := 0
+	for i := range result.Comments {
+		if policy.SeverityAbove(&result.Comments[i], approveBelow) {
+			n++
+		}
+	}
+	return n
+}
+
+// decideState computes the Forgejo review state from the result JSON, the
+// approval threshold, and the posting outcome, with no run-to-run state.
+// Findings are JSON comments above the approval threshold; posted reports
+// whether posting succeeded (inline review submitted or summary published).
+func decideState(result *review.Result, approveBelow string, posted bool) string {
+	if countFindings(result, approveBelow) == 0 {
+		return StateApproved
+	}
+	if posted {
+		return StateRequestChanges
+	}
+	return StateComment
+}
+
 // Publish posts the result to the PR via the poster and returns stats.
 func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, error) {
 	if opts.OverlapThresh <= 0 || opts.OverlapThresh > 1 {
 		opts.OverlapThresh = incremental.DefaultOverlapThreshold
 	}
+	if opts.ApproveBelow == "" {
+		opts.ApproveBelow = defaultApproveBelow
+	}
 	stats := &Stats{Total: len(result.Comments)}
 
-	// No comments: LGTM summary (sticky-aware).
+	// No comments: empty approval review (best-effort) plus the LGTM
+	// summary (sticky-aware), which remains the primary contract.
 	if stats.Total == 0 {
 		message := result.Message
 		if message == "" {
 			message = "No comments generated. Looks good to me."
+		}
+		commitID := bestCommitID(p, opts)
+		reviewID, err := p.CreatePullReview(nil, commitID)
+		if err != nil {
+			stats.State = StateComment
+			log.Printf("[approve] approval review creation failed: %v", err)
+		} else if err := p.SubmitPullReview(reviewID, StateApproved, approveBody); err != nil {
+			stats.State = StateComment
+			log.Printf("[approve] approval review submit failed: %v", err)
+		} else {
+			stats.State = StateApproved
 		}
 		anchor := findSummaryComment(p, opts)
 		stats.SummaryURL = upsertSummary(p, opts, anchor, format.WrapSummaryBody(format.BuildNoIssuesBody(message), opts.RunTag))
@@ -179,52 +238,54 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 	anchor := anchorSummary(p, opts, stats, noLine, routed, result.Warnings)
 
 	// Post the review.
+	// submitState assumes posting succeeds; failure paths demote the
+	// recorded state to COMMENT.
+	submitState := decideState(result, opts.ApproveBelow, true)
 	if len(inline) > 0 {
-		commitID := opts.CommitID
+		commitID := bestCommitID(p, opts)
 		if commitID == "" {
-			pr, prErr := p.GetPullRequest()
-			if prErr != nil || pr == nil || pr.HeadSHA == "" {
-				// An empty commit makes the batch call guaranteed to fail;
-				// fail the comments up front with a clear reason.
-				for _, it := range inline {
-					failed = append(failed, failedItem{comment: it.comment, reason: "could not resolve reviewed commit for posting"})
-				}
-				inline = nil
-				log.Printf("[publish] could not resolve commit for posting: %v", prErr)
-			} else {
-				commitID = pr.HeadSHA
-			}
-		}
-		inputs := make([]poster.ReviewCommentInput, 0, len(inline))
-		for _, it := range inline {
-			inputs = append(inputs, poster.ReviewCommentInput{
-				Path:    it.comment.Path,
-				Body:    it.body,
-				NewLine: it.comment.EndLine,
-			})
-		}
-		reviewID, err := p.CreatePullReview(inputs, commitID)
-		if err != nil {
-			// The whole batch failed (e.g. commit drift): report per comment.
+			// Nothing can be created: fail the comments up front with a
+			// clear reason; no review is created or submitted.
 			for _, it := range inline {
-				failed = append(failed, failedItem{
-					comment: it.comment,
-					reason:  fmt.Sprintf("review could not be created for commit %s: %v", commitID, err),
+				failed = append(failed, failedItem{comment: it.comment, reason: "could not resolve reviewed commit for posting"})
+			}
+			inline = nil
+			stats.State = StateComment
+		} else {
+			inputs := make([]poster.ReviewCommentInput, 0, len(inline))
+			for _, it := range inline {
+				inputs = append(inputs, poster.ReviewCommentInput{
+					Path:    it.comment.Path,
+					Body:    it.body,
+					NewLine: it.comment.EndLine,
 				})
 			}
-			log.Printf("[publish] review creation failed: %v", err)
-		} else {
-			if err := p.SubmitPullReview(reviewID, submitBody(stats, inline)); err != nil {
-				_ = p.DeletePullReview(reviewID)
+			reviewID, err := p.CreatePullReview(inputs, commitID)
+			if err != nil {
+				// The whole batch failed (e.g. commit drift): report per comment.
 				for _, it := range inline {
 					failed = append(failed, failedItem{
 						comment: it.comment,
-						reason:  fmt.Sprintf("review submit failed: %v", err),
+						reason:  fmt.Sprintf("review could not be created for commit %s: %v", commitID, err),
 					})
 				}
-				log.Printf("[publish] review submit failed: %v", err)
+				stats.State = StateComment
+				log.Printf("[publish] review creation failed: %v", err)
 			} else {
-				stats.Inline = len(inline)
+				if err := p.SubmitPullReview(reviewID, submitState, submitBody(stats, inline)); err != nil {
+					_ = p.DeletePullReview(reviewID)
+					for _, it := range inline {
+						failed = append(failed, failedItem{
+							comment: it.comment,
+							reason:  fmt.Sprintf("review submit failed: %v", err),
+						})
+					}
+					stats.State = StateComment
+					log.Printf("[publish] review submit failed: %v", err)
+				} else {
+					stats.Inline = len(inline)
+					stats.State = submitState
+				}
 			}
 		}
 	}
@@ -233,6 +294,12 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 	// Finalize the summary.
 	finalBody := finalizeBody(opts, stats, noLine, routed, failed, inline, result.Warnings)
 	stats.SummaryURL = upsertSummary(p, opts, anchor, finalBody)
+	if stats.State == "" {
+		// No inline review was attempted: decide from the posting outcome.
+		// A summary-only run still requests changes when the summary
+		// published; posting failures had already recorded COMMENT.
+		stats.State = decideState(result, opts.ApproveBelow, stats.SummaryURL != "")
+	}
 	return stats, nil
 }
 
@@ -242,6 +309,23 @@ func preview(b []byte) string {
 		s = s[:200]
 	}
 	return s
+}
+
+// approveBody is the body of the empty approval review on clean runs.
+const approveBody = "🔍 OpenCodeReview: no issues found."
+
+// bestCommitID returns the SHA OCR actually reviewed, falling back to the
+// PR's current head SHA. Empty when neither is available.
+func bestCommitID(p poster.Poster, opts Options) string {
+	if opts.CommitID != "" {
+		return opts.CommitID
+	}
+	pr, err := p.GetPullRequest()
+	if err != nil || pr == nil || pr.HeadSHA == "" {
+		log.Printf("[publish] could not resolve commit for posting: %v", err)
+		return ""
+	}
+	return pr.HeadSHA
 }
 
 func submitBody(stats *Stats, inline []inlineItem) string {

@@ -96,6 +96,42 @@ func TestParseFlagsSuggestionsFalse(t *testing.T) {
 	}
 }
 
+func TestParseFlagsApproveBelowDefaultLow(t *testing.T) {
+	cfg, err := ParseFlags([]string{
+		"--url", "https://forge.example.com", "--repo", "o/r", "--pr", "1",
+		"/tmp/result.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ApproveBelow != "low" {
+		t.Fatalf("--approve-below must default to low, got %q", cfg.ApproveBelow)
+	}
+}
+
+func TestParseFlagsApproveBelowCustom(t *testing.T) {
+	cfg, err := ParseFlags([]string{
+		"--url", "https://forge.example.com", "--repo", "o/r", "--pr", "1",
+		"--approve-below", "medium", "/tmp/result.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ApproveBelow != "medium" {
+		t.Fatalf("--approve-below = %q, want medium", cfg.ApproveBelow)
+	}
+}
+
+func TestParseFlagsRejectsRemovedFailOnSeverity(t *testing.T) {
+	// --fail-on-severity was removed; it must be rejected as unknown.
+	if _, err := ParseFlags([]string{
+		"--url", "https://forge.example.com", "--repo", "o/r", "--pr", "1",
+		"--fail-on-severity", "high", "/tmp/result.json",
+	}); err == nil {
+		t.Fatal("--fail-on-severity must no longer parse")
+	}
+}
+
 func TestValidateOverlapThresholdRange(t *testing.T) {
 	fs := flag.NewFlagSet("t", flag.ContinueOnError)
 	for _, tc := range []struct {

@@ -5,8 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/felixz92/open-code-review-forgejo/internal/review"
 )
 
 func TestWriteStatsFile(t *testing.T) {
@@ -57,27 +55,5 @@ func TestWriteStatsFileCreatesDir(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("stats file should exist: %v", err)
-	}
-}
-
-func TestShouldFailOnSeverity(t *testing.T) {
-	r := result(c("a.go", 1, 1, "medium"), c("b.go", 1, 1, "low"))
-	if ShouldFailOnSeverity(r, "high") {
-		t.Fatal("medium is below high, must not trip")
-	}
-	if !ShouldFailOnSeverity(r, "medium") {
-		t.Fatal("at-threshold must trip")
-	}
-	if !ShouldFailOnSeverity(r, "low") {
-		t.Fatal("low threshold must trip on any known severity")
-	}
-	if ShouldFailOnSeverity(result(), "critical") {
-		t.Fatal("empty result must not trip")
-	}
-	if ShouldFailOnSeverity(result(review.Comment{Severity: "weird"}), "high") {
-		t.Fatal("unknown severity must not trip")
-	}
-	if ShouldFailOnSeverity(r, "") {
-		t.Fatal("no threshold must never trip")
 	}
 }

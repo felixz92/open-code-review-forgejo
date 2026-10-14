@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -120,7 +121,7 @@ func TestDryRunPostsNothing(t *testing.T) {
 	if _, err := p.CreatePullReview([]ReviewCommentInput{{Path: "a.go", Body: "b", NewLine: 5}}, "sha"); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.SubmitPullReview(1, "body"); err != nil {
+	if err := p.SubmitPullReview(1, "APPROVED", "body"); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.DeletePullReview(1); err != nil {
@@ -181,6 +182,10 @@ func TestForgejoReviewFlow(t *testing.T) {
 			}
 			_, _ = fmt.Fprint(w, `{"id": 5, "state": "PENDING"}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/owner/repo/pulls/42/reviews/5":
+			sbody, _ := io.ReadAll(r.Body)
+			if !strings.Contains(string(sbody), `"event":"REQUEST_CHANGES"`) {
+				t.Errorf("submit must carry the requested event, got %s", sbody)
+			}
 			_, _ = fmt.Fprint(w, `{"id": 5, "state": "COMMENT"}`)
 		case r.Method == http.MethodDelete && r.URL.Path == "/api/v1/repos/owner/repo/pulls/42/reviews/5":
 			w.WriteHeader(http.StatusNoContent)
@@ -196,7 +201,7 @@ func TestForgejoReviewFlow(t *testing.T) {
 	if err != nil || rid != 5 {
 		t.Fatalf("CreatePullReview = %d, %v", rid, err)
 	}
-	if err := p.SubmitPullReview(5, "body"); err != nil {
+	if err := p.SubmitPullReview(5, "REQUEST_CHANGES", "body"); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.DeletePullReview(5); err != nil {
@@ -236,5 +241,26 @@ func TestForgejoGetDiffAndPR(t *testing.T) {
 func TestNewForgejoRequiresURL(t *testing.T) {
 	if _, err := NewForgejo(context.Background(), "", "o", "r", 1, "t", nil); !errors.Is(err, errInvalidConfig) {
 		t.Fatalf("expected errInvalidConfig, got %v", err)
+	}
+}
+
+func TestDryRunSubmitPrintsState(t *testing.T) {
+	p := NewDryRun()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	defer func() { os.Stdout = old }()
+	if err := p.SubmitPullReview(1, "APPROVED", "body"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, _ := io.ReadAll(r)
+	if !strings.Contains(string(out), "APPROVED") {
+		t.Fatalf("dry-run submit must print the state, got %q", out)
 	}
 }

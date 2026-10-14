@@ -30,7 +30,7 @@ type Config struct {
 	IncrementalOverlapThresh float64
 	RouteSeverityBelow       string
 	RouteCategories          string
-	FailOnSeverity           string
+	ApproveBelow             string
 	RunTag                   string
 	Suggestions              bool
 }
@@ -58,7 +58,7 @@ func ParseFlags(args []string) (*Config, error) {
 	fs.Float64Var(&cfg.IncrementalOverlapThresh, "incremental-overlap-threshold", 0.6, "IoU threshold for incremental overlap (0 < x <= 1)")
 	fs.StringVar(&cfg.RouteSeverityBelow, "route-severity-below", "", "route findings at-or-below this severity to the summary")
 	fs.StringVar(&cfg.RouteCategories, "route-categories", "", "comma-separated categories to route to the summary")
-	fs.StringVar(&cfg.FailOnSeverity, "fail-on-severity", "", "exit non-zero when any comment is at-or-above this severity")
+	fs.StringVar(&cfg.ApproveBelow, "approve-below", "low", "findings above this severity block approval; the named severity and below approve")
 	fs.StringVar(&cfg.RunTag, "run-tag", "", "per-run identity for idempotency tags (default: <pr>-<head sha>)")
 	fs.BoolVar(&cfg.Suggestions, "suggestions", true, "include Before/After suggestion blocks in comment bodies")
 
@@ -228,6 +228,7 @@ func run(cfg *Config) int {
 		Route:         policy.Build(cfg.RouteSeverityBelow, cfg.RouteCategories),
 		CommitID:      commitID,
 		Suggestions:   cfg.Suggestions,
+		ApproveBelow:  cfg.ApproveBelow,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -240,13 +241,8 @@ func run(cfg *Config) int {
 	if err := publish.WriteStatsFile(cfg.StatsFilePath, stats); err != nil {
 		fmt.Fprintln(os.Stderr, "warning: could not write stats file:", err)
 	}
-	log.Printf("posted %d/%d inline, %d summary, %d routed, %d skipped, %d failed (total %d)",
-		stats.Inline, stats.Total, stats.Summary, stats.Routed, stats.Skipped, stats.Failed, stats.Total)
-
-	if publish.ShouldFailOnSeverity(result, cfg.FailOnSeverity) {
-		fmt.Fprintf(os.Stderr, "error: severity threshold %q exceeded\n", cfg.FailOnSeverity)
-		return 3
-	}
+	log.Printf("posted %d/%d inline, %d summary, %d routed, %d skipped, %d failed (total %d): %s",
+		stats.Inline, stats.Total, stats.Summary, stats.Routed, stats.Skipped, stats.Failed, stats.Total, stats.State)
 	return 0
 }
 

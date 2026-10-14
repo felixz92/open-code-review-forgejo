@@ -65,7 +65,7 @@ type PullRequestInfo struct {
 // Poster is the transport used to publish an OCR review.
 type Poster interface {
 	CreatePullReview(comments []ReviewCommentInput, commitID string) (int64, error)
-	SubmitPullReview(reviewID int64, body string) error
+	SubmitPullReview(reviewID int64, state, body string) error
 	DeletePullReview(reviewID int64) error
 	ListPullReviews() ([]ReviewInfo, error)
 	ListPullReviewComments(reviewID int64) ([]ReviewCommentInfo, error)
@@ -218,9 +218,10 @@ func (p *ForgejoPoster) CreatePullReview(comments []ReviewCommentInput, commitID
 	return reviewID, err
 }
 
-// SubmitPullReview submits a pending review with the given event and body.
-func (p *ForgejoPoster) SubmitPullReview(reviewID int64, body string) error {
-	opts := forgejo.SubmitPullReviewOptions{State: forgejo.ReviewStateComment, Body: body}
+// SubmitPullReview submits a pending review with the given review state
+// (APPROVED, REQUEST_CHANGES or COMMENT) and body.
+func (p *ForgejoPoster) SubmitPullReview(reviewID int64, state, body string) error {
+	opts := forgejo.SubmitPullReviewOptions{State: forgejo.ReviewStateType(state), Body: body}
 	return p.do("submit review", func() (*forgejo.Response, error) {
 		_, resp, err := p.client.SubmitPullReview(p.owner, p.repo, p.pr, reviewID, opts)
 		return resp, err
@@ -379,9 +380,9 @@ func (DryRunPoster) CreatePullReview(comments []ReviewCommentInput, commitID str
 	return 1, nil
 }
 
-// SubmitPullReview prints the review body.
-func (DryRunPoster) SubmitPullReview(_ int64, body string) error {
-	fmt.Printf("--- dry-run review submit ---\n%s\n", body)
+// SubmitPullReview prints the review state and body.
+func (DryRunPoster) SubmitPullReview(_ int64, state, body string) error {
+	fmt.Printf("--- dry-run review submit [%s] ---\n%s\n", state, body)
 	return nil
 }
 

@@ -95,3 +95,32 @@ func TestRouteCaseInsensitive(t *testing.T) {
 		t.Fatal("metadata should be matched case/whitespace-insensitively")
 	}
 }
+
+func TestSeverityAbove(t *testing.T) {
+	tests := []struct {
+		name      string
+		threshold string
+		severity  string
+		want      bool
+	}{
+		{"default low: low does not block", "low", "low", false},
+		{"default low: medium blocks", "low", "medium", true},
+		{"default low: critical blocks", "low", "critical", true},
+		{"high threshold: medium approves", "high", "medium", false},
+		{"high threshold: high does not block", "high", "high", false},
+		{"critical threshold: critical does not block", "critical", "critical", false},
+		{"malformed threshold fails safe on low", "banana", "low", true},
+		{"malformed threshold fails safe on critical", "banana", "critical", true},
+		{"empty threshold fails safe", "", "low", true},
+		{"case and whitespace normalized", " LOW ", "medium", true},
+		{"unknown comment severity never blocks", "low", "weird", false},
+		{"empty comment severity never blocks", "low", "", false},
+	}
+	for _, tc := range tests {
+		c := &review.Comment{Severity: tc.severity}
+		if got := SeverityAbove(c, tc.threshold); got != tc.want {
+			t.Errorf("SeverityAbove(severity %q, threshold %q) = %v, want %v (%s)",
+				tc.severity, tc.threshold, got, tc.want, tc.name)
+		}
+	}
+}
