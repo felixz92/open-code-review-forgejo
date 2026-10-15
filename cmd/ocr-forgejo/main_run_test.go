@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,5 +53,26 @@ func TestRunCompletedResultExitsZero(t *testing.T) {
 	data := readRunStats(t, stats)
 	if !strings.Contains(data, "OCR_RUN_STATUS=completed") {
 		t.Fatalf("stats must mark the completed run, got %q", data)
+	}
+}
+
+// TestRunPostingFailureStillWritesStats pins the carried spec scenario
+// "Stats file always written": posting fails partway through and the run
+// still writes the stats file with the counts achieved so far.
+func TestRunPostingFailureStillWritesStats(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message": "denied"}`))
+	}))
+	defer srv.Close()
+	input, stats := writeRunFixture(t, `{"comments": [], "warnings": [], "message": "no issues"}`)
+	code := run(&Config{URL: srv.URL, Owner: "o", Repo: "r", PRIndex: 1, Token: "t", InputPath: input, StatsFilePath: stats})
+	if code != 0 {
+		t.Fatalf("posting failures are best-effort: run = %d, want 0", code)
+	}
+	data := readRunStats(t, stats)
+	if !strings.Contains(data, "OCR_COMMENTS_TOTAL=0") || !strings.Contains(data, "OCR_RUN_STATUS=completed") {
+		t.Fatalf("stats file must carry the counts achieved so far, got %q", data)
 	}
 }

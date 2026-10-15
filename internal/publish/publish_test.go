@@ -867,6 +867,26 @@ func TestPublishReportedFailedRunFixture(t *testing.T) {
 	}
 }
 
+// TestPublishUnknownStatusKeepsApprovalPath pins the exact-string gate:
+// a status value other than "failed" never triggers failure handling.
+func TestPublishUnknownStatusKeepsApprovalPath(t *testing.T) {
+	f := newFake()
+	f.headSHA = "head123"
+	stats, err := Publish(&review.Result{Status: "succeeded", Message: "no issues"}, f, Options{RunTag: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.submitStates) != 1 || f.submitStates[0] != StateApproved {
+		t.Fatalf("submit states = %v, want [APPROVED]", f.submitStates)
+	}
+	if !strings.Contains(f.createdSummary[0], "✅") {
+		t.Fatalf("non-failed status must keep the LGTM body, got %q", f.createdSummary[0])
+	}
+	if stats.RunStatus == "failed" {
+		t.Fatalf("unknown status values must not be classified as failed: %+v", stats)
+	}
+}
+
 func TestPublishFailedRunDryRunPrintsNoteWithoutWrites(t *testing.T) {
 	r := &review.Result{Status: "failed", Message: "run crashed"}
 	old := os.Stdout
