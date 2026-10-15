@@ -232,6 +232,16 @@ func BuildNoIssuesBody(message string) string {
 	return "✅ **OpenCodeReview**: " + message
 }
 
+// BuildFailureBody renders the failure note for a failed `ocr review`
+// run: the ⚠️-prefixed note relays the run's `message` when present and
+// includes the warnings block when the run reported warnings.
+func BuildFailureBody(message string, warnings []review.Warning) string {
+	if message == "" {
+		message = "review run failed."
+	}
+	return "⚠️ **OpenCodeReview**: " + message + FormatWarnings(warnings)
+}
+
 // WrapSummaryBody prefixes the summary body with both the cross-run marker
 // and the per-run tag.
 func WrapSummaryBody(content, runTag string) string {

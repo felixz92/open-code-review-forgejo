@@ -26,6 +26,7 @@ func TestWriteStatsFile(t *testing.T) {
 		"OCR_COMMENTS_FAILED=1",
 		"OCR_FINDINGS_RESOLVED=4",
 		"OCR_SUMMARY_URL=comment:55",
+		"OCR_RUN_STATUS=completed",
 	}
 	got := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	if len(got) != len(want) {
@@ -74,5 +75,30 @@ func TestWriteStatsFileCreatesDir(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("stats file should exist: %v", err)
+	}
+}
+
+func TestWriteStatsFileRunStatusFailed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ocr-stats.env")
+	if err := WriteStatsFile(path, &Stats{RunStatus: "failed"}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "OCR_RUN_STATUS=failed") {
+		t.Fatalf("failed run status missing from stats file: %q", data)
+	}
+}
+
+func TestWriteStatsFileRunStatusDefaultsToCompleted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "ocr-stats.env")
+	if err := WriteStatsFile(path, &Stats{}); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "OCR_RUN_STATUS=completed") {
+		t.Fatalf("run status must default to completed: %q", data)
+	}
+	if strings.Contains(string(data), "OCR_RUN_STATUS=") && strings.Contains(strings.Split(string(data), "OCR_RUN_STATUS=")[1], "failed") {
+		t.Fatalf("run status line must not report failed by default: %q", data)
 	}
 }

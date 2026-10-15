@@ -44,6 +44,10 @@ type Result struct {
 	Warnings []Warning `json:"warnings"`
 	Message  string    `json:"message"`
 	Manifest Manifest  `json:"manifest"`
+	// Status is the run-status marker from `ocr review --format json`.
+	// Only the exact value "failed" means a failed run; absent or any
+	// other value keeps the pre-status behavior.
+	Status string `json:"status"`
 }
 
 const stderrTailLimit = 2000
