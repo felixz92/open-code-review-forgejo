@@ -96,3 +96,41 @@ func TestRunPostingFailureStillWritesStats(t *testing.T) {
 		t.Fatalf("stats file must carry the counts achieved so far, got %q", data)
 	}
 }
+
+// TestRunMalformedJSONExitsOneWithLogTail pins the carried spec scenario
+// "Malformed JSON with stderr log" at the CLI level: unparseable input
+// exits 1, writes the stats file, and relays the OCR stderr-log tail.
+func TestRunMalformedJSONExitsOneWithLogTail(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "result.json")
+	logPath := filepath.Join(dir, "ocr-stderr.log")
+	statsPath := filepath.Join(dir, "ocr-stats.env")
+	if err := os.WriteFile(input, []byte(`{not json`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("tool search_issues err: boom\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldErr := os.Stderr
+	rd, wr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = wr
+	code := run(&Config{DryRun: true, InputPath: input, StderrLogPath: logPath, StatsFilePath: statsPath, PRIndex: 1})
+	os.Stderr = oldErr
+	if err := wr.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stderrOut bytes.Buffer
+	if _, err := io.Copy(&stderrOut, rd); err != nil {
+		t.Fatal(err)
+	}
+	if code != 1 {
+		t.Fatalf("run = %d, want 1 for malformed JSON", code)
+	}
+	if !strings.Contains(stderrOut.String(), "tool search_issues err: boom") {
+		t.Fatalf("error output must include the stderr-log tail, got %q", stderrOut.String())
+	}
+	readRunStats(t, statsPath) // stats file still written on this exit path
+}
