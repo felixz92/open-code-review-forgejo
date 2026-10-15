@@ -378,6 +378,10 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 func publishFailed(result *review.Result, p poster.Poster, opts Options, stats *Stats) *Stats {
 	stats.State = StateComment
 	stats.RunStatus = "failed"
+	// Nothing was posted: the OCR_COMMENTS_* partition stays fully zero
+	// even when the failed result carries findings, which only appear
+	// informationally in the failure note.
+	stats.Total = 0
 
 	cleanupStalePending(p)
 	commitID := bestCommitID(p, opts)

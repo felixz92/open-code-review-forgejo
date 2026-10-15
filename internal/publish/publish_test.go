@@ -785,8 +785,21 @@ func TestPublishFailedRunWithFindingsNeverApproves(t *testing.T) {
 	if !strings.Contains(f.createdSummary[0], "`a.go`") {
 		t.Fatalf("findings must land informationally in the failure-note summary, got %q", f.createdSummary[0])
 	}
-	if stats.Inline != 0 || stats.State != StateComment || stats.RunStatus != "failed" {
+	if stats.Inline != 0 || stats.State != StateComment || stats.RunStatus != "failed" || stats.Total != 0 {
 		t.Fatalf("stats = %+v", stats)
+	}
+	// The stats file pins the failure wording for every failed run, even
+	// one carrying leftovers: OCR_COMMENTS_TOTAL counts posted comments.
+	statsPath := filepath.Join(t.TempDir(), "ocr-stats.env")
+	if err := WriteStatsFile(statsPath, stats); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(statsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "OCR_COMMENTS_TOTAL=0") || !strings.Contains(string(data), "OCR_RUN_STATUS=failed") {
+		t.Fatalf("failed-with-findings run must report total 0, got %q", data)
 	}
 }
 
