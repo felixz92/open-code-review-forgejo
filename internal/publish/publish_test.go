@@ -803,6 +803,29 @@ func TestPublishFailedRunWithFindingsNeverApproves(t *testing.T) {
 	}
 }
 
+// TestPublishFailedRunBelowThresholdNeverApproves pins the failed-run
+// override for findings entirely below the approval threshold: without
+// the override decideState would approve, so the failed gate must win.
+func TestPublishFailedRunBelowThresholdNeverApproves(t *testing.T) {
+	f := newFake()
+	f.headSHA = "head123"
+	r := &review.Result{
+		Status:   "failed",
+		Message:  "run crashed",
+		Comments: []review.Comment{c("a.go", 1, 2, "low")}, // at/below default ApproveBelow
+	}
+	stats, err := Publish(r, f, Options{RunTag: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.submitStates) != 1 || f.submitStates[0] != StateComment {
+		t.Fatalf("submit states = %v, want [COMMENT] even for below-threshold findings", f.submitStates)
+	}
+	if stats.State != StateComment || stats.RunStatus != "failed" {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
 func TestPublishFailedRunKeepsResolutionLedgerOpen(t *testing.T) {
 	prior := &format.Ledger{
 		Version: format.LedgerVersion,
