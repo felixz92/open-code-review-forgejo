@@ -12,7 +12,7 @@ import (
 func WriteStatsFile(path string, stats *Stats) error {
 	runStatus := stats.RunStatus
 	if runStatus == "" {
-		runStatus = "completed"
+		runStatus = RunStatusCompleted
 	}
 	lines := []string{
 		fmt.Sprintf("OCR_COMMENTS_TOTAL=%d", stats.Total),

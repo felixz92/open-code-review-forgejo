@@ -247,11 +247,11 @@ func run(cfg *Config) int {
 	if err := publish.WriteStatsFile(cfg.StatsFilePath, stats); err != nil {
 		fmt.Fprintln(os.Stderr, "warning: could not write stats file:", err)
 	}
-	if stats.RunStatus == "failed" {
+	if stats.RunStatus == publish.RunStatusFailed {
 		// A failed OCR run vouches for nothing: surface the failure to
 		// the workflow instead of exiting zero (mirrors the malformed
 		// JSON path).
-		fmt.Fprintln(os.Stderr, "error: review run reported status \"failed\"; published the failure note instead of an approval")
+		fmt.Fprintln(os.Stderr, "error: review run reported status \"failed\"; exiting non-zero without approval (failure-note posting is best-effort)")
 		return 1
 	}
 	log.Printf("posted %d/%d inline, %d summary, %d routed, %d skipped, %d failed, %d resolved (total %d): %s",

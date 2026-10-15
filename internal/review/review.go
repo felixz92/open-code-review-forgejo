@@ -38,6 +38,11 @@ type Manifest struct {
 	Input ManifestInput `json:"input"`
 }
 
+// StatusFailed is the only Status value that classifies a run as failed.
+// Publication and CLI code must compare against this constant rather than
+// a duplicated string literal.
+const StatusFailed = "failed"
+
 // Result is the parsed `ocr review --format json` document.
 type Result struct {
 	Comments []Comment `json:"comments"`
@@ -45,7 +50,7 @@ type Result struct {
 	Message  string    `json:"message"`
 	Manifest Manifest  `json:"manifest"`
 	// Status is the run-status marker from `ocr review --format json`.
-	// Only the exact value "failed" means a failed run; absent or any
+	// Only the exact value StatusFailed means a failed run; absent or any
 	// other value keeps the pre-status behavior.
 	Status string `json:"status"`
 }

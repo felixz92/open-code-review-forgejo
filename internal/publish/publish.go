@@ -50,6 +50,15 @@ const (
 	StateComment        = "COMMENT"
 )
 
+// Run-status values recorded in Stats.RunStatus and surfaced to the
+// workflow via OCR_RUN_STATUS in the dotenv stats file. CLI and publish
+// code must compare against these constants rather than duplicated
+// string literals.
+const (
+	RunStatusFailed    = "failed"
+	RunStatusCompleted = "completed"
+)
+
 // Stats holds mutually exclusive posting counts.
 type Stats struct {
 	Total   int
@@ -130,7 +139,7 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 
 	// Failed run: never approve, never touch the resolution ledger (see
 	// publishFailed).
-	if result.Status == "failed" {
+	if result.Status == review.StatusFailed {
 		return publishFailed(result, p, opts, stats), nil
 	}
 
@@ -377,7 +386,7 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 // findings in a failed result are informational only.
 func publishFailed(result *review.Result, p poster.Poster, opts Options, stats *Stats) *Stats {
 	stats.State = StateComment
-	stats.RunStatus = "failed"
+	stats.RunStatus = RunStatusFailed
 	// Nothing was posted: the OCR_COMMENTS_* partition stays fully zero
 	// even when the failed result carries findings, which only appear
 	// informationally in the failure note.
