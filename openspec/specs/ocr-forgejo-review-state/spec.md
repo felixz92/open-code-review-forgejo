@@ -27,10 +27,11 @@ The CLI SHALL derive the submitted review state from the result JSON and the pos
 - no findings → submit `APPROVED`
 - findings present and posting succeeded (inline review submitted or summary published) → submit `REQUEST_CHANGES`
 - findings present but posting failed → submit `COMMENT` instead, logging the posting failure
+- result JSON reports `status: "failed"` → the state SHALL always be `COMMENT`, overriding every rule above, and no empty approval review SHALL be created (see the `ocr-forgejo-review-posting` capability: failed-run publication)
 
 #### Scenario: Clean result approves
 
-- **WHEN** the result JSON has no comments
+- **WHEN** the result JSON has no comments and no `status` field (or a value other than `failed`)
 - **THEN** the run submits an `APPROVED` review
 
 #### Scenario: Low-severity-only result approves
@@ -63,6 +64,11 @@ The CLI SHALL derive the submitted review state from the result JSON and the pos
 - **WHEN** a comment in the result JSON carries a severity that is not on the known ladder, for example because the field is missing entirely
 - **THEN** the comment counts as a finding and the run does not submit `APPROVED`
 
+#### Scenario: Failed run never approves
+
+- **WHEN** the result JSON reports `status: "failed"` regardless of findings (even findings entirely below the approval threshold)
+- **THEN** the run submits `COMMENT` (or no review when the note review could not be created) and never `APPROVED`
+
 ### Requirement: Empty review on clean run
 
 When the result JSON has no findings, the CLI SHALL additionally create and submit an empty Forgejo review carrying the computed state (in addition to the sticky "no issues" summary), so the PR review status changes on clean runs.
@@ -80,3 +86,12 @@ When Forgejo refuses the submitted state (for example self-approval or branch-pr
 
 - **WHEN** Forgejo rejects the `APPROVED` submission because the bot authored the PR
 - **THEN** the CLI logs the refusal, completes the run, and exits zero
+
+### Requirement: Failed run exits non-zero
+
+When the result JSON reports `status: "failed"`, the CLI SHALL treat the run as failed: publish the failure note (see the `ocr-forgejo-review-posting` capability), write the stats file with `OCR_RUN_STATUS=failed`, and exit non-zero.
+
+#### Scenario: Failed run reports failure to the workflow
+
+- **WHEN** the CLI completes publishing the failure note for a result JSON with `status: "failed"`
+- **THEN** the process exits non-zero and the stats file contains `OCR_RUN_STATUS=failed`
