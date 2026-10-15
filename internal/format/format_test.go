@@ -212,3 +212,28 @@ func TestFormatCommentNeutralizesCommentClose(t *testing.T) {
 		t.Fatalf("marker not neutralized: %q", out)
 	}
 }
+
+func TestBuildFailureBody(t *testing.T) {
+	got := BuildFailureBody("boom", nil)
+	if !strings.HasPrefix(got, "⚠️ **OpenCodeReview**: boom") {
+		t.Fatalf("BuildFailureBody = %q, want ⚠️ prefix with message", got)
+	}
+}
+
+func TestBuildFailureBodyIncludesWarnings(t *testing.T) {
+	warns := []review.Warning{{File: "a.go", Type: "llm", Message: "flaky"}}
+	got := BuildFailureBody("boom", warns)
+	if !strings.HasPrefix(got, "⚠️ **OpenCodeReview**: boom") {
+		t.Fatalf("BuildFailureBody = %q, want ⚠️ prefix with message", got)
+	}
+	if !strings.Contains(got, "flaky") {
+		t.Fatalf("BuildFailureBody must relay warnings, got %q", got)
+	}
+}
+
+func TestBuildFailureBodyNamesFailureWithoutMessage(t *testing.T) {
+	got := BuildFailureBody("", nil)
+	if !strings.HasPrefix(got, "⚠️ **OpenCodeReview**: ") {
+		t.Fatalf("BuildFailureBody = %q, want ⚠️ prefix naming the failure", got)
+	}
+}

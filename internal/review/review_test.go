@@ -105,3 +105,53 @@ func TestLoadMissingFile(t *testing.T) {
 		t.Fatal("expected error for missing file")
 	}
 }
+
+func TestLoadFailedStatus(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "result.json")
+	data := `{"status": "failed", "comments": null}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if r.Status != "failed" {
+		t.Fatalf("Status = %q, want \"failed\"", r.Status)
+	}
+	// A failed run fixture carries no other substance: fields stay zero.
+	if r.Message != "" || len(r.Comments) != 0 || len(r.Warnings) != 0 || r.Manifest != (Manifest{}) {
+		t.Fatalf("unexpected result: %+v", r)
+	}
+}
+
+func TestLoadAbsentStatusYieldsZeroValue(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "result.json")
+	data := `{"comments": [], "warnings": [], "message": "no issues"}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if r.Status != "" {
+		t.Fatalf("Status = %q, want empty for absent status field", r.Status)
+	}
+}
+
+func TestLoadReportedFailedRunFixture(t *testing.T) {
+	// The exact JSON the user reported for issue: a failed run with
+	// tool-call errors, null comments, no manifest and no message.
+	path := filepath.Join("testdata", "failed-run.json")
+	r, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if r.Status != "failed" {
+		t.Fatalf("Status = %q, want \"failed\"", r.Status)
+	}
+	if len(r.Comments) != 0 || r.Message != "" || len(r.Warnings) != 0 || r.Manifest != (Manifest{}) {
+		t.Fatalf("unexpected result: %+v", r)
+	}
+}

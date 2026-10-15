@@ -1,0 +1,20 @@
+{
+  "status": "failed",
+  "llm": { "provider": "z-ai-coding", "model": "glm-5.3-flash" },
+  "summary": { "files_reviewed": 5, "comments": 0 },
+  "tool_calls": {
+    "total": 31,
+    "failure": 2,
+    "failure_details": [
+      {
+        "tool_name": "search_issues",
+        "error": "search issues err: user does not exist [uid: 0, name: unknown]"
+      },
+      {
+        "tool_name": "list_repo_pull_requests",
+        "error": "get pull request list err: GetUserByName"
+      }
+    ]
+  },
+  "comments": null
+}

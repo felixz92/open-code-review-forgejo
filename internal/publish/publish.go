@@ -67,6 +67,10 @@ type Stats struct {
 	// block approval, REQUEST_CHANGES when findings posted successfully,
 	// COMMENT when posting failed).
 	State string
+	// RunStatus classifies the OCR run itself: "failed" when the result
+	// JSON reported status "failed", "completed" otherwise. Surfaced to
+	// the workflow via OCR_RUN_STATUS in the dotenv stats file.
+	RunStatus string
 }
 
 type inlineItem struct {
@@ -123,6 +127,12 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 		opts.ApproveBelow = defaultApproveBelow
 	}
 	stats := &Stats{Total: len(result.Comments)}
+
+	// Failed run: never approve, never touch the resolution ledger (see
+	// publishFailed).
+	if result.Status == "failed" {
+		return publishFailed(result, p, opts, stats), nil
+	}
 
 	// No comments: empty approval review (best-effort) plus the LGTM
 	// summary (sticky-aware), which remains the primary contract.
@@ -359,6 +369,56 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 		stats.State = decideState(result, opts.ApproveBelow, stats.SummaryURL != "")
 	}
 	return stats, nil
+}
+
+// publishFailed handles a result that reported status "failed": it never
+// submits an approval, leaves the resolution ledger untouched, and relays
+// the failure note as a COMMENT note review plus the sticky summary. Any
+// findings in a failed result are informational only.
+func publishFailed(result *review.Result, p poster.Poster, opts Options, stats *Stats) *Stats {
+	stats.State = StateComment
+	stats.RunStatus = "failed"
+
+	cleanupStalePending(p)
+	commitID := bestCommitID(p, opts)
+	note := format.BuildFailureBody(result.Message, result.Warnings)
+	reviewID, err := p.CreatePullReview(nil, commitID)
+	if err != nil {
+		// The failure note still reaches the sticky summary below.
+		log.Printf("[failed-run] note review creation failed: %v", err)
+	} else if err := p.SubmitPullReview(reviewID, StateComment, note); err != nil {
+		// Mirror the approval path: the created pending review is
+		// removed on refusal so a persistent failure cannot
+		// accumulate orphans.
+		_ = p.DeletePullReview(reviewID)
+		log.Printf("[failed-run] note review submit failed: %v", err)
+	}
+
+	// Findings from a failed run cannot be trusted to anchor: they are
+	// listed in the summary as information only.
+	body := note
+	if len(result.Comments) > 0 {
+		items := make([]format.SummaryItem, 0, len(result.Comments))
+		for i := range result.Comments {
+			items = append(items, format.SummaryItem{
+				Comment: &result.Comments[i],
+				Reason:  "review run failed (informational)",
+			})
+		}
+		body += format.FormatSummaryComments(items, false)
+	}
+
+	anchor := findSummaryComment(p, opts)
+	if opts.ResolutionTracking {
+		// The ledger lives inside the sticky summary: re-encode the
+		// prior ledger unchanged so open entries survive the run
+		// (no entries added, none resolved).
+		prior := loadLedger(p, opts)
+		body += "\n" + format.EncodeLedger(prior)
+	}
+
+	stats.SummaryURL = upsertSummary(p, opts, anchor, format.WrapSummaryBody(body, opts.RunTag))
+	return stats
 }
 
 func preview(b []byte) string {

@@ -1,8 +1,12 @@
 package publish
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -728,5 +732,166 @@ func TestPublishSuggestionsTrueWithoutSuggestionCode(t *testing.T) {
 	body := f.createdComments[0].Body
 	if strings.Contains(body, "**After:**") || strings.Contains(body, "**Before:**") || strings.Contains(body, "<details>") {
 		t.Fatalf("comment without suggestion_code must not gain empty blocks:\n%s", body)
+	}
+}
+
+func TestPublishFailedRunNeverApproves(t *testing.T) {
+	f := newFake()
+	f.headSHA = "head123"
+	f.reviews = []poster.ReviewInfo{{ID: 7, State: "PENDING", Reviewer: "ci-bot"}}
+	stats, err := Publish(&review.Result{Status: "failed", Message: "run crashed"}, f, Options{RunTag: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.deletedReviews) != 1 || f.deletedReviews[0] != 7 {
+		t.Fatalf("stale pending cleanup must still run, got %v", f.deletedReviews)
+	}
+	// Exactly one review, submitted as COMMENT — never APPROVED.
+	if len(f.submitStates) != 1 || f.submitStates[0] != StateComment {
+		t.Fatalf("submit states = %v, want [COMMENT]", f.submitStates)
+	}
+	if !strings.Contains(f.submitBody, "⚠️") || !strings.Contains(f.submitBody, "run crashed") {
+		t.Fatalf("note review must carry the failure note, got %q", f.submitBody)
+	}
+	if len(f.createdSummary) != 1 || !strings.Contains(f.createdSummary[0], "⚠️") {
+		t.Fatalf("summary must show the failure note, got %v", f.createdSummary)
+	}
+	if strings.Contains(f.createdSummary[0], "✅") {
+		t.Fatalf("failed run must not publish the LGTM body, got %q", f.createdSummary[0])
+	}
+	if stats.State != StateComment || stats.RunStatus != "failed" || stats.Total != 0 || stats.SummaryURL != "comment:55" {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestPublishFailedRunWithFindingsNeverApproves(t *testing.T) {
+	f := newFake()
+	f.headSHA = "head123"
+	r := &review.Result{
+		Status:   "failed",
+		Message:  "run crashed",
+		Comments: []review.Comment{c("a.go", 1, 3, "critical")},
+	}
+	stats, err := Publish(r, f, Options{RunTag: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.submitStates) != 1 || f.submitStates[0] != StateComment {
+		t.Fatalf("submit states = %v, want [COMMENT]", f.submitStates)
+	}
+	if len(f.createdComments) != 0 {
+		t.Fatalf("failed run must not post anchored inline comments, got %v", f.createdComments)
+	}
+	if !strings.Contains(f.createdSummary[0], "`a.go`") {
+		t.Fatalf("findings must land informationally in the failure-note summary, got %q", f.createdSummary[0])
+	}
+	if stats.Inline != 0 || stats.State != StateComment || stats.RunStatus != "failed" {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestPublishFailedRunKeepsResolutionLedgerOpen(t *testing.T) {
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 10, EndLine: 10, FirstSeen: "run-1", Content: "content a.go"}},
+	}
+	f := newFake()
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	stats, err := Publish(&review.Result{Status: "failed"}, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Resolved != 0 {
+		t.Fatalf("failed run must not resolve open entries, got %d", stats.Resolved)
+	}
+	body, ok := f.editedSummary[31]
+	if !ok {
+		t.Fatalf("failure note must upsert the existing sticky summary, created %v", f.createdSummary)
+	}
+	_, l, found, err := format.StripLedger(body)
+	if err != nil || !found {
+		t.Fatalf("summary must keep the prior ledger block: found=%v err=%v", found, err)
+	}
+	if len(l.Open) != 1 || l.Open[0].Path != "a.go" || l.Open[0].FirstSeen != "run-1" {
+		t.Fatalf("open entries must remain open unchanged, got %+v", l)
+	}
+	if len(l.Resolved) != 0 {
+		t.Fatalf("failed run must not add resolved entries, got %+v", l.Resolved)
+	}
+	if !strings.Contains(body, "⚠️") {
+		t.Fatalf("summary must show the failure note, got %q", body)
+	}
+}
+
+func TestPublishFailedRunUpsertsOneSummary(t *testing.T) {
+	f := newFake()
+	f.headSHA = "head123"
+	existing := format.WrapSummaryBody(format.BuildFailureBody("run crashed", nil), "t")
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: existing}}
+	if _, err := Publish(&review.Result{Status: "failed", Message: "run crashed"}, f, Options{RunTag: "t", Sticky: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.createdSummary) != 0 {
+		t.Fatalf("rerun must upsert the existing summary, created %v", f.createdSummary)
+	}
+	if body := f.editedSummary[31]; !strings.Contains(body, "run crashed") || !strings.Contains(body, "⚠️") || strings.Contains(body, "✅") {
+		t.Fatalf("summary must keep the failure note (never LGTM), got %q", body)
+	}
+}
+
+// TestPublishReportedFailedRunFixture exercises the exact user-reported
+// failed-run JSON shared with internal/review's fixture so the reported
+// case stays reproducible end to end.
+func TestPublishReportedFailedRunFixture(t *testing.T) {
+	r, err := review.Load(filepath.Join("..", "review", "testdata", "failed-run.json"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	f := newFake()
+	f.headSHA = "head123"
+	stats, err := Publish(r, f, Options{RunTag: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.submitStates) != 1 || f.submitStates[0] != StateComment {
+		t.Fatalf("submit states = %v, want [COMMENT]", f.submitStates)
+	}
+	if !strings.Contains(f.createdSummary[0], "⚠️ **OpenCodeReview**:") {
+		t.Fatalf("summary must carry the failure note, got %q", f.createdSummary[0])
+	}
+	if strings.Contains(f.createdSummary[0], "✅") {
+		t.Fatalf("failed run must not publish the LGTM body, got %q", f.createdSummary[0])
+	}
+	if stats.RunStatus != "failed" || stats.State != StateComment || stats.Total != 0 {
+		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestPublishFailedRunDryRunPrintsNoteWithoutWrites(t *testing.T) {
+	r := &review.Result{Status: "failed", Message: "run crashed"}
+	old := os.Stdout
+	rd, wr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = wr
+	stats, err := Publish(r, poster.NewDryRun(), Options{RunTag: "t"})
+	os.Stdout = old
+	if err := wr.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, rd); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "--- dry-run summary comment ---") || !strings.Contains(out, "⚠️ **OpenCodeReview**: run crashed") {
+		t.Fatalf("dry run must print the failure note, got %q", out)
+	}
+	if stats.RunStatus != "failed" || stats.State != StateComment {
+		t.Fatalf("stats = %+v", stats)
 	}
 }
