@@ -233,7 +233,8 @@ func TestBuildFailureBodyIncludesWarnings(t *testing.T) {
 
 func TestBuildFailureBodyNamesFailureWithoutMessage(t *testing.T) {
 	got := BuildFailureBody("", nil)
-	if !strings.HasPrefix(got, "⚠️ **OpenCodeReview**: ") {
-		t.Fatalf("BuildFailureBody = %q, want ⚠️ prefix naming the failure", got)
+	want := "⚠️ **OpenCodeReview**: review run failed."
+	if got != want {
+		t.Fatalf("BuildFailureBody = %q, want %q", got, want)
 	}
 }
