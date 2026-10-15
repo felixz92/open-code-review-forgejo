@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,9 +33,27 @@ func readRunStats(t *testing.T, path string) string {
 
 func TestRunFailedResultExitsOne(t *testing.T) {
 	input, stats := writeRunFixture(t, `{"status": "failed", "comments": null}`)
+	// The exit reason must be logged to stderr for the workflow log.
+	oldErr := os.Stderr
+	rd, wr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = wr
 	code := run(&Config{DryRun: true, InputPath: input, StatsFilePath: stats, PRIndex: 1})
+	os.Stderr = oldErr
+	if err := wr.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stderrOut bytes.Buffer
+	if _, err := io.Copy(&stderrOut, rd); err != nil {
+		t.Fatal(err)
+	}
 	if code != 1 {
 		t.Fatalf("run = %d, want 1 for a failed review run", code)
+	}
+	if !strings.Contains(stderrOut.String(), `error: review run reported status "failed"`) {
+		t.Fatalf("failure reason must be logged to stderr, got %q", stderrOut.String())
 	}
 	data := readRunStats(t, stats)
 	if !strings.Contains(data, "OCR_RUN_STATUS=failed") {
