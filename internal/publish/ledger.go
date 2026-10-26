@@ -71,7 +71,15 @@ func (c *Coverage) resolves(path string, start, end int64) bool {
 	if c.Inv == nil {
 		return false // no coverage: resolve nothing
 	}
-	return c.Inv.Classify(path, start, end) == diffinv.Valid
+	// Ledger entries record spans at the head they were last seen at (the
+	// --from side of this run's coverage diff), while the diff inventory's
+	// new-side ranges use the current head's numbering. Containment against
+	// the new side would let a stale span numerically land inside a hunk
+	// covering different, newly inserted lines and mark a still-live
+	// finding resolved (design D4 bypass). ClassifyOld instead checks the
+	// entry's span against the old-side regions the diff actually touched,
+	// which is the numbering the entry was recorded in.
+	return c.Inv.ClassifyOld(path, start, end) == diffinv.Valid
 }
 
 func mergeLedger(prior *format.Ledger, cov *Coverage, candidates, posted []inlineItem, runTag, resolvedDate string, thresh float64) (*format.Ledger, []format.LedgerEntry) {
@@ -188,6 +196,13 @@ func freshLedger() *format.Ledger {
 // ledger block, or an absent block all degrade to a fresh empty ledger,
 // never blocking posting. Callers then seed a new ledger from this run.
 func loadLedger(p poster.Poster, opts Options) *format.Ledger {
+	// Only trust the bot's own summaries: a forged marker comment could
+	// otherwise plant a ledger and steer resolution or approvals.
+	me, err := p.WhoAmI()
+	if err != nil {
+		log.Printf("[resolution] could not identify bot user, starting fresh ledger: %v", err)
+		return freshLedger()
+	}
 	comments, err := p.ListIssueComments()
 	if err != nil {
 		log.Printf("[resolution] could not list comments, starting fresh ledger: %v", err)
@@ -203,7 +218,7 @@ func loadLedger(p poster.Poster, opts Options) *format.Ledger {
 		needle = fmt.Sprintf(format.PerRunMarkerFmt, opts.RunTag)
 	}
 	for i := len(comments) - 1; i >= 0; i-- {
-		if !strings.Contains(comments[i].Body, needle) {
+		if comments[i].Author != me || !strings.Contains(comments[i].Body, needle) {
 			continue
 		}
 		ledger, found, err := format.ParseLedger(comments[i].Body)

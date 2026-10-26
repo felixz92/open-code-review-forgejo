@@ -585,6 +585,14 @@ func spanFromHistory(c poster.ReviewCommentInfo) *incremental.Span {
 // findSummaryComment returns the ID of the newest comment carrying the marker
 // (cross-run marker in sticky mode, per-run tag otherwise), or 0.
 func findSummaryComment(p poster.Poster, opts Options) int64 {
+	// Only anchor on the bot's own summaries: editing a foreign comment is
+	// impossible anyway, and trusting its marker would re-trigger the
+	// failed-edit fallback on every run.
+	me, err := p.WhoAmI()
+	if err != nil {
+		log.Printf("[summary] could not identify bot user: %v", err)
+		return 0
+	}
 	comments, err := p.ListIssueComments()
 	if err != nil {
 		log.Printf("[summary] could not list comments: %v", err)
@@ -595,9 +603,10 @@ func findSummaryComment(p poster.Poster, opts Options) int64 {
 		needle = fmt.Sprintf(format.PerRunMarkerFmt, opts.RunTag)
 	}
 	for i := len(comments) - 1; i >= 0; i-- {
-		if strings.Contains(comments[i].Body, needle) {
-			return comments[i].ID
+		if comments[i].Author != me || !strings.Contains(comments[i].Body, needle) {
+			continue
 		}
+		return comments[i].ID
 	}
 	return 0
 }

@@ -45,6 +45,17 @@ func newFake() *fakePoster {
 	return &fakePoster{reviewComments: map[int64][]poster.ReviewCommentInfo{}, editedSummary: map[int64]string{}}
 }
 
+func TestFindSummaryCommentIgnoresForeignSummary(t *testing.T) {
+	f := newFake()
+	f.issueComments = []poster.IssueCommentInfo{
+		{ID: 2, Author: "ci-bot", Body: format.SummaryMarker + "\nreal summary"},
+		{ID: 9, Author: "imposter", Body: format.SummaryMarker + "\nforged summary"},
+	}
+	if got := findSummaryComment(f, Options{RunTag: "t", Sticky: true}); got != 2 {
+		t.Fatalf("findSummaryComment = %d, want 2 (foreign summary must not become the anchor)", got)
+	}
+}
+
 func (f *fakePoster) CreatePullReview(comments []poster.ReviewCommentInput, commitID string) (int64, error) {
 	if commitID == "" {
 		// Server contract: an empty commit makes the batch call fail.
@@ -261,8 +272,8 @@ func TestPublishDeletesStalePending(t *testing.T) {
 func TestPublishStickySummaryUpdatesInPlace(t *testing.T) {
 	f := newFake()
 	f.issueComments = []poster.IssueCommentInfo{
-		{ID: 30, Body: "unrelated"},
-		{ID: 31, Body: format.SummaryMarker + "\nold body"},
+		{ID: 30, Author: "ci-bot", Body: "unrelated"},
+		{ID: 31, Author: "ci-bot", Body: format.SummaryMarker + "\nold body"},
 	}
 	r := result(c("a.go", 1, 1, "low"))
 	if _, err := Publish(r, f, Options{RunTag: "t", CommitID: "s", Sticky: true}); err != nil {
@@ -598,7 +609,7 @@ func TestPublishCommitDriftFailsCommentsToSummary(t *testing.T) {
 
 func TestPublishNonStickyCreatesFreshSummary(t *testing.T) {
 	f := newFake()
-	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold"}}
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Author: "ci-bot", Body: format.SummaryMarker + "\nold"}}
 	r := result()
 	if _, err := Publish(r, f, Options{RunTag: "t-2", Sticky: false}); err != nil {
 		t.Fatal(err)
@@ -836,7 +847,7 @@ func TestPublishFailedRunKeepsResolutionLedgerOpen(t *testing.T) {
 		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 10, EndLine: 10, FirstSeen: "run-1", Content: "content a.go"}},
 	}
 	f := newFake()
-	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Author: "ci-bot", Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
 	stats, err := Publish(&review.Result{Status: "failed"}, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true})
 	if err != nil {
 		t.Fatal(err)
@@ -867,7 +878,7 @@ func TestPublishFailedRunUpsertsOneSummary(t *testing.T) {
 	f := newFake()
 	f.headSHA = "head123"
 	existing := format.WrapSummaryBody(format.BuildFailureBody("run crashed", nil), "t")
-	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: existing}}
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Author: "ci-bot", Body: existing}}
 	if _, err := Publish(&review.Result{Status: "failed", Message: "run crashed"}, f, Options{RunTag: "t", Sticky: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -1032,7 +1043,7 @@ func TestPublishMarkerSurvivesLedgerReencode(t *testing.T) {
 	}
 	// Second run: clean, re-encodes the ledger into the sticky summary.
 	// The sticky lookup must find run 1's final summary body.
-	f.issueComments = []poster.IssueCommentInfo{{ID: 55, Body: f.editedSummary[55]}}
+	f.issueComments = []poster.IssueCommentInfo{{ID: 55, Author: "ci-bot", Body: f.editedSummary[55]}}
 	f.createdSummary = nil
 	r2 := result()
 	r2.Manifest = review.Manifest{Input: review.ManifestInput{ResolvedHead: "bbb222"}}

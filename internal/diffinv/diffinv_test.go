@@ -91,6 +91,83 @@ func TestClassifyIncompleteInventory(t *testing.T) {
 	}
 }
 
+func TestClassifyOld(t *testing.T) {
+	inv, err := New([]byte(simpleDiff))
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletion := `diff --git a/d.go b/d.go
+--- a/d.go
++++ b/d.go
+@@ -5,3 +4,0 @@
+-one
+-two
+-three
+`
+	dinv, err := New([]byte(deletion))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name, path string
+		start, end int64
+		want       Class
+		inv        *Inventory
+	}{
+		{inv: inv, name: "inside old hunk", path: "a.go", start: 1, end: 3, want: Valid},
+		{inv: inv, name: "partial overlap with old hunk", path: "a.go", start: 3, end: 8, want: Valid},
+		{inv: inv, name: "past old hunk", path: "a.go", start: 5, end: 9, want: Invalid},
+		{inv: inv, name: "second file old side", path: "b.go", start: 10, end: 11, want: Valid},
+		{inv: inv, name: "second file past old side", path: "b.go", start: 12, end: 13, want: Invalid},
+		{inv: inv, name: "unknown file", path: "c.go", start: 1, end: 3, want: Invalid},
+		{inv: dinv, name: "pure deletion old side", path: "d.go", start: 6, end: 6, want: Valid},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.inv.ClassifyOld(tt.path, tt.start, tt.end); got != tt.want {
+				t.Fatalf("ClassifyOld(%q, %d, %d) = %v, want %v", tt.path, tt.start, tt.end, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifyOldIncompleteInventory(t *testing.T) {
+	inv, err := New([]byte(truncatedDiff))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := inv.ClassifyOld("a.go", 1, 3); got != Unknown {
+		t.Fatalf("incomplete inventory should classify old side unknown, got %v", got)
+	}
+}
+
+// insertionDiff adds two lines at the top of a.go: the new-side range covers
+// lines 1-5, the old-side range only 1-3. A ledger span recorded before the
+// insertion (lines 4-5) must not classify as changed.
+const insertionDiff = `diff --git a/a.go b/a.go
+--- a/a.go
++++ b/a.go
+@@ -1,3 +1,5 @@
++inserted1()
++inserted2()
+ keep1()
+ keep2()
+ keep3()
+`
+
+func TestStaleSpanNotProvablyChangedByInsertionHunk(t *testing.T) {
+	inv, err := New([]byte(insertionDiff))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := inv.Classify("a.go", 4, 5); got != Valid {
+		t.Fatalf("sanity: new-side Classify = %v, want Valid", got)
+	}
+	if got := inv.ClassifyOld("a.go", 4, 5); got != Invalid {
+		t.Fatalf("stale span must not classify as changed, got %v", got)
+	}
+}
+
 func TestNewEmptyDiff(t *testing.T) {
 	inv, err := New(nil)
 	if err != nil {

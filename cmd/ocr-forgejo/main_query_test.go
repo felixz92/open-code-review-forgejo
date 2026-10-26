@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -15,8 +16,9 @@ import (
 // queryFake records every mutating call so tests can assert the query
 // mode performs no writes.
 type queryFake struct {
-	comments []poster.IssueCommentInfo
-	listErr  error
+	comments  []poster.IssueCommentInfo
+	listErr   error
+	whoAmIErr error
 
 	createdReviews  int
 	createdComments []poster.ReviewCommentInput
@@ -71,7 +73,12 @@ func (f *queryFake) GetPullRequest() (*poster.PullRequestInfo, error) {
 	return &poster.PullRequestInfo{HeadSHA: "head"}, nil
 }
 
-func (f *queryFake) WhoAmI() (string, error) { return "ci-bot", nil }
+func (f *queryFake) WhoAmI() (string, error) {
+	if f.whoAmIErr != nil {
+		return "", f.whoAmIErr
+	}
+	return "ci-bot", nil
+}
 
 func summaryBody(sha string) string {
 	body := format.SummaryMarker + "\ncontent"
@@ -124,7 +131,7 @@ func captureStderr(t *testing.T, fn func()) string {
 func TestPrintLastReviewedFound(t *testing.T) {
 	f := &queryFake{comments: []poster.IssueCommentInfo{
 		{ID: 2, Body: "unrelated comment"},
-		{ID: 3, Body: summaryBody("abc123")},
+		{ID: 3, Author: "ci-bot", Body: summaryBody("abc123")},
 	}}
 	out := captureStdout(t, func() {
 		if code := runPrintLastReviewed(f); code != 0 {
@@ -133,6 +140,43 @@ func TestPrintLastReviewedFound(t *testing.T) {
 	})
 	if out != "abc123\n" {
 		t.Fatalf("stdout = %q, want %q", out, "abc123\n")
+	}
+}
+
+func TestPrintLastReviewedIgnoresForeignAuthors(t *testing.T) {
+	f := &queryFake{comments: []poster.IssueCommentInfo{
+		{ID: 2, Author: "ci-bot", Body: summaryBody("abc123")},
+		{ID: 3, Author: "imposter", Body: summaryBody("dead999")},
+	}}
+	out := captureStdout(t, func() {
+		if code := runPrintLastReviewed(f); code != 0 {
+			t.Fatalf("runPrintLastReviewed = %d, want 0", code)
+		}
+	})
+	if out != "abc123\n" {
+		t.Fatalf("stdout = %q, want %q (forged marker from another author must be ignored)", out, "abc123\n")
+	}
+}
+
+func TestPrintLastReviewedWhoAmIError(t *testing.T) {
+	f := &queryFake{whoAmIErr: errors.New("identity unavailable"), comments: []poster.IssueCommentInfo{
+		{ID: 2, Author: "ci-bot", Body: summaryBody("abc123")},
+	}}
+	out := captureStdout(t, func() {
+		if code := runPrintLastReviewed(f); code != 0 {
+			t.Fatalf("runPrintLastReviewed = %d, want 0", code)
+		}
+	})
+	if out != "" {
+		t.Fatalf("stdout = %q, want empty (unverifiable authorship must not print a marker)", out)
+	}
+	errOut := captureStderr(t, func() {
+		if code := runPrintLastReviewed(f); code != 0 {
+			t.Fatalf("runPrintLastReviewed = %d, want 0", code)
+		}
+	})
+	if errOut == "" {
+		t.Fatal("stderr must carry a warning when the bot identity cannot be verified")
 	}
 }
 
@@ -149,7 +193,7 @@ func TestPrintLastReviewedNoSummary(t *testing.T) {
 }
 
 func TestPrintLastReviewedSummaryWithoutMarker(t *testing.T) {
-	f := &queryFake{comments: []poster.IssueCommentInfo{{ID: 3, Body: summaryBody("")}}}
+	f := &queryFake{comments: []poster.IssueCommentInfo{{ID: 3, Author: "ci-bot", Body: summaryBody("")}}}
 	out := captureStdout(t, func() {
 		if code := runPrintLastReviewed(f); code != 0 {
 			t.Fatalf("runPrintLastReviewed = %d, want 0", code)
@@ -180,11 +224,11 @@ func TestPrintLastReviewedAPIError(t *testing.T) {
 
 func TestPrintLastReviewedNewestSummaryWins(t *testing.T) {
 	// Many comments, two sticky summaries: the newest match must win.
-	comments := []poster.IssueCommentInfo{{ID: 1, Body: summaryBody("oldest111")}}
+	comments := []poster.IssueCommentInfo{{ID: 1, Author: "ci-bot", Body: summaryBody("oldest111")}}
 	for i := 0; i < 50; i++ {
 		comments = append(comments, poster.IssueCommentInfo{ID: int64(i + 2), Body: "filler"})
 	}
-	comments = append(comments, poster.IssueCommentInfo{ID: 100, Body: summaryBody("newest222")})
+	comments = append(comments, poster.IssueCommentInfo{ID: 100, Author: "ci-bot", Body: summaryBody("newest222")})
 	f := &queryFake{comments: comments}
 	out := captureStdout(t, func() { _ = runPrintLastReviewed(f) })
 	if out != "newest222\n" {
@@ -193,7 +237,7 @@ func TestPrintLastReviewedNewestSummaryWins(t *testing.T) {
 }
 
 func TestPrintLastReviewedPerformsNoWrites(t *testing.T) {
-	f := &queryFake{comments: []poster.IssueCommentInfo{{ID: 3, Body: summaryBody("abc123")}}}
+	f := &queryFake{comments: []poster.IssueCommentInfo{{ID: 3, Author: "ci-bot", Body: summaryBody("abc123")}}}
 	out := captureStdout(t, func() { _ = runPrintLastReviewed(f) })
 	if !strings.Contains(out, "abc123") {
 		t.Fatalf("query must still report the SHA, got %q", out)
