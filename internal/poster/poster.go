@@ -286,22 +286,32 @@ func (p *ForgejoPoster) ListPullReviewComments(reviewID int64) ([]ReviewCommentI
 }
 
 // ListIssueComments returns all comments on the PR (PRs are issues),
-// following pagination.
+// following pagination until a short page ends the listing. Sticky-summary
+// and last-reviewed lookups must see every comment, not just the first page.
 func (p *ForgejoPoster) ListIssueComments() ([]IssueCommentInfo, error) {
 	var out []IssueCommentInfo
-	err := p.do("list issue comments", func() (*forgejo.Response, error) {
-		comments, resp, err := p.client.ListIssueComments(p.owner, p.repo, p.pr, forgejo.ListIssueCommentOptions{
-			ListOptions: forgejo.ListOptions{Page: len(out)/pageSize + 1, PageSize: pageSize},
+	for page := 1; ; page++ {
+		var batch []IssueCommentInfo
+		err := p.do("list issue comments", func() (*forgejo.Response, error) {
+			comments, resp, err := p.client.ListIssueComments(p.owner, p.repo, p.pr, forgejo.ListIssueCommentOptions{
+				ListOptions: forgejo.ListOptions{Page: page, PageSize: pageSize},
+			})
+			if err != nil {
+				return resp, err
+			}
+			for _, c := range comments {
+				batch = append(batch, IssueCommentInfo{ID: c.ID, Body: c.Body})
+			}
+			return resp, nil
 		})
 		if err != nil {
-			return resp, err
+			return nil, err
 		}
-		for _, c := range comments {
-			out = append(out, IssueCommentInfo{ID: c.ID, Body: c.Body})
+		out = append(out, batch...)
+		if len(batch) < pageSize {
+			return out, nil
 		}
-		return resp, nil
-	})
-	return out, err
+	}
 }
 
 // CreateIssueComment creates a comment on the PR and returns its ID.

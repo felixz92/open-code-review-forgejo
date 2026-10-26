@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/felixz92/open-code-review-forgejo/internal/diffinv"
 	"github.com/felixz92/open-code-review-forgejo/internal/format"
 	"github.com/felixz92/open-code-review-forgejo/internal/incremental"
 	"github.com/felixz92/open-code-review-forgejo/internal/poster"
@@ -44,7 +45,36 @@ func snippet(content string) string {
 // posted. Open entries matched by no candidate move to the resolved list
 // with the resolution stamp; the resolved list is pruned to
 // MaxResolvedEntries.
-func mergeLedger(prior *format.Ledger, candidates, posted []inlineItem, runTag, resolvedDate string, thresh float64) (*format.Ledger, []format.LedgerEntry) {
+// Coverage gates which open ledger entries may resolve on a run.
+// Nil keeps the pre-coverage full-range semantics: unmatched open entries
+// resolve as before. A non-nil Coverage with a nil inventory means "no
+// coverage" (the diff file was unreadable or unparseable): nothing resolves.
+// A non-nil inventory resolves an unmatched entry only when the diff
+// inventory classifies its path and span as valid.
+type Coverage struct {
+	Inv *diffinv.Inventory
+}
+
+// NewCoverage wraps a parsed diff inventory.
+func NewCoverage(inv *diffinv.Inventory) *Coverage { return &Coverage{Inv: inv} }
+
+// NoCoverage returns the "coverage requested but unavailable" state:
+// nothing may resolve this run.
+func NoCoverage() *Coverage { return &Coverage{} }
+
+// resolves reports whether an unmatched open entry may resolve under this
+// coverage state at the given path and span.
+func (c *Coverage) resolves(path string, start, end int64) bool {
+	if c == nil {
+		return true // no coverage flag: full-range semantics
+	}
+	if c.Inv == nil {
+		return false // no coverage: resolve nothing
+	}
+	return c.Inv.Classify(path, start, end) == diffinv.Valid
+}
+
+func mergeLedger(prior *format.Ledger, cov *Coverage, candidates, posted []inlineItem, runTag, resolvedDate string, thresh float64) (*format.Ledger, []format.LedgerEntry) {
 	if prior == nil {
 		prior = &format.Ledger{Version: format.LedgerVersion}
 	}
@@ -80,6 +110,14 @@ func mergeLedger(prior *format.Ledger, candidates, posted []inlineItem, runTag, 
 			next.Open = append(next.Open, e) // survivors keep ledger order
 			continue
 		}
+		if !cov.resolves(e.Path, e.StartLine, e.EndLine) {
+			// Coverage says the code under this finding was not
+			// provably changed (or coverage is unavailable): the entry
+			// was not re-reviewed, so it stays open instead of
+			// silently resolving.
+			next.Open = append(next.Open, e)
+			continue
+		}
 		e.ResolvedIn, e.ResolvedDate = runTag, resolvedDate
 		next.Resolved = append(next.Resolved, e)
 		thisRun = append(thisRun, e)
@@ -100,6 +138,43 @@ func mergeLedger(prior *format.Ledger, candidates, posted []inlineItem, runTag, 
 		next.Resolved = next.Resolved[excess:]
 	}
 	return next, thisRun
+}
+
+// survivingOpenCount reports how many prior open entries will still be open
+// after the merge: entries re-reported this run (matched by a candidate) plus
+// entries the coverage does not resolve. It mirrors mergeLedger's matching
+// and coverage rules so the review state can be downgraded before the review
+// is submitted (design D4). Posting success only decides whether new entries
+// are added, never which prior entries survive, so the count is exact.
+func survivingOpenCount(prior *format.Ledger, cov *Coverage, candidates []inlineItem, thresh float64) int {
+	if prior == nil {
+		return 0
+	}
+	open := prior.Open
+	matched := make([]bool, len(open))
+	for _, it := range candidates {
+		if it.span == nil || it.comment == nil {
+			continue
+		}
+		for j := range open {
+			if matched[j] || open[j].Path != it.comment.Path {
+				continue
+			}
+			entry := incremental.NewSpan(open[j].StartLine, open[j].EndLine)
+			if entry == nil || !incremental.SameCommentSpan(*it.span, *entry, thresh) {
+				continue
+			}
+			matched[j] = true
+			break
+		}
+	}
+	count := 0
+	for j := range open {
+		if matched[j] || !cov.resolves(open[j].Path, open[j].StartLine, open[j].EndLine) {
+			count++
+		}
+	}
+	return count
 }
 
 // freshLedger returns the empty ledger a run degrades to when prior state is
@@ -154,12 +229,13 @@ func resolvedToday() string {
 // resolutions instead of presenting a bare no-issues body; an empty ledger
 // keeps the existing no-issues body. Either way the merged ledger is
 // re-embedded so retained state survives the summary rewrite.
-func trackedNoIssuesBody(p poster.Poster, opts Options, message string) (string, int) {
-	prior := loadLedger(p, opts)
-	merged, thisRun := mergeLedger(prior, nil, nil, opts.RunTag, resolvedToday(), opts.OverlapThresh)
+func trackedNoIssuesBody(prior *format.Ledger, opts Options, message string) (string, int, int) {
+	merged, thisRun := mergeLedger(prior, opts.Coverage, nil, nil, opts.RunTag, resolvedToday(), opts.OverlapThresh)
 	content := format.BuildNoIssuesBody(message)
-	if len(thisRun) > 0 {
-		content += format.FormatLedgerSections(nil, thisRun)
+	if len(merged.Open) > 0 || len(thisRun) > 0 {
+		// Surviving open entries (e.g. a delta run whose coverage does
+		// not reach them) must stay visible instead of a bare LGTM body.
+		content += format.FormatLedgerSections(merged.Open, thisRun)
 	}
-	return format.WrapSummaryBody(content+"\n"+format.EncodeLedger(merged), opts.RunTag), len(thisRun)
+	return format.WrapSummaryBody(content+"\n"+format.EncodeLedger(merged), opts.RunTag), len(thisRun), len(merged.Open)
 }

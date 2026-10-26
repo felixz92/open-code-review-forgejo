@@ -40,6 +40,9 @@ type Options struct {
 	// ResolutionTracking maintains the cross-run findings ledger in the
 	// sticky summary (opt-in via --resolution-tracking).
 	ResolutionTracking bool
+	// Coverage gates which open ledger entries may resolve (from
+	// --coverage-diff). Nil keeps the full-range resolution semantics.
+	Coverage *Coverage
 	// GetDiff is used by tests via the Poster interface; no extra fields.
 }
 
@@ -117,8 +120,14 @@ func countFindings(result *review.Result, approveBelow string) int {
 // approval threshold, and the posting outcome, with no run-to-run state.
 // Findings are JSON comments above the approval threshold; posted reports
 // whether posting succeeded (inline review submitted or summary published).
-func decideState(result *review.Result, approveBelow string, posted bool) string {
+func decideState(result *review.Result, approveBelow string, posted bool, openSurvivors int) string {
 	if countFindings(result, approveBelow) == 0 {
+		if openSurvivors > 0 {
+			// Clean delta run with surviving open entries: those
+			// findings were not re-reviewed, so approving here would
+			// vouch for code nobody looked at (design D4).
+			return StateComment
+		}
 		return StateApproved
 	}
 	if posted {
@@ -150,13 +159,22 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 		if message == "" {
 			message = "No comments generated. Looks good to me."
 		}
+		// Decide the state before submitting: surviving open entries
+		// (clean delta run) must downgrade the approval (design D4).
+		var prior *format.Ledger
+		openSurvivors := 0
+		if opts.ResolutionTracking {
+			prior = loadLedger(p, opts)
+			openSurvivors = survivingOpenCount(prior, opts.Coverage, nil, opts.OverlapThresh)
+		}
+		state := decideState(result, opts.ApproveBelow, true, openSurvivors)
 		cleanupStalePending(p)
 		commitID := bestCommitID(p, opts)
 		reviewID, err := p.CreatePullReview(nil, commitID)
 		if err != nil {
 			stats.State = StateComment
 			log.Printf("[approve] approval review creation failed: %v", err)
-		} else if err := p.SubmitPullReview(reviewID, StateApproved, approveBody); err != nil {
+		} else if err := p.SubmitPullReview(reviewID, state, approveBody); err != nil {
 			// Mirror the findings path: the created pending review is
 			// removed on refusal so a persistent failure cannot
 			// accumulate orphans (this branch returns before any later
@@ -165,17 +183,24 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 			stats.State = StateComment
 			log.Printf("[approve] approval review submit failed: %v", err)
 		} else {
-			stats.State = StateApproved
+			stats.State = state
 		}
 		anchor := findSummaryComment(p, opts)
 		body := format.WrapSummaryBody(format.BuildNoIssuesBody(message), opts.RunTag)
 		if opts.ResolutionTracking {
-			// A non-empty open ledger resolves all entries and reports
-			// the resolutions; an empty ledger keeps the classic body.
+			// A non-empty open ledger resolves the entries the coverage
+			// permits and reports the resolutions; an empty ledger keeps
+			// the classic body.
 			var resolved int
-			body, resolved = trackedNoIssuesBody(p, opts, message)
+			body, resolved, openSurvivors = trackedNoIssuesBody(prior, opts, message)
 			stats.Resolved = resolved
+			if openSurvivors > 0 {
+				body += fmt.Sprintf("\n\nℹ️ Delta clean, %d finding(s) remain open.", openSurvivors)
+			}
 		}
+		// Success paths record the reviewed head for the query mode;
+		// the helper returns "" when the SHA is unknown.
+		body += format.FormatLastReviewedMarker(result.Manifest.Input.ResolvedHead)
 		stats.SummaryURL = upsertSummary(p, opts, anchor, body)
 		return stats, nil
 	}
@@ -289,10 +314,13 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 
 	// Prior ledger state must be read before the anchor flow can create
 	// this run's own summary comment, which would shadow the genuine
-	// prior-run summary comment.
+	// prior-run summary comment. The survivor count must also be known
+	// before the review state is decided (design D4).
 	var priorLedger *format.Ledger
+	openSurvivors := 0
 	if opts.ResolutionTracking {
 		priorLedger = loadLedger(p, opts)
+		openSurvivors = survivingOpenCount(priorLedger, opts.Coverage, candidates, opts.OverlapThresh)
 	}
 
 	// Idempotent retry cleanup: delete stale pending reviews of this bot.
@@ -303,8 +331,9 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 
 	// Post the review.
 	// submitState assumes posting succeeds; failure paths demote the
-	// recorded state to COMMENT.
-	submitState := decideState(result, opts.ApproveBelow, true)
+	// recorded state to COMMENT. Surviving open entries downgrade an
+	// otherwise clean approval (design D4).
+	submitState := decideState(result, opts.ApproveBelow, true, openSurvivors)
 	if len(inline) > 0 {
 		commitID := bestCommitID(p, opts)
 		if commitID == "" {
@@ -364,18 +393,28 @@ func Publish(result *review.Result, p poster.Poster, opts Options) (*Stats, erro
 		if stats.Inline != len(inline) {
 			addSet = nil // nothing was actually posted: no entries added (D3)
 		}
-		mergedLedger, resolutions = mergeLedger(priorLedger, candidates, addSet, opts.RunTag, resolvedToday(), opts.OverlapThresh)
+		mergedLedger, resolutions = mergeLedger(priorLedger, opts.Coverage, candidates, addSet, opts.RunTag, resolvedToday(), opts.OverlapThresh)
 		stats.Resolved = len(resolutions)
 	}
 
 	// Finalize the summary.
 	finalBody := finalizeBody(opts, stats, noLine, routed, failed, inline, result.Warnings, mergedLedger, resolutions)
+	if stats.State == StateApproved {
+		// Approvals record the reviewed head for the query mode; the
+		// helper returns "" when the SHA is unknown.
+		finalBody += format.FormatLastReviewedMarker(result.Manifest.Input.ResolvedHead)
+	} else if openSurvivors > 0 && countFindings(result, opts.ApproveBelow) == 0 {
+		// Downgraded run: note why the run did not approve. Computed
+		// from the survivor count directly because when no inline review
+		// was attempted the recorded state only settles below.
+		finalBody += fmt.Sprintf("\n\nℹ️ Delta clean, %d finding(s) remain open.", openSurvivors)
+	}
 	stats.SummaryURL = upsertSummary(p, opts, anchor, finalBody)
 	if stats.State == "" {
 		// No inline review was attempted: decide from the posting outcome.
 		// A summary-only run still requests changes when the summary
 		// published; posting failures had already recorded COMMENT.
-		stats.State = decideState(result, opts.ApproveBelow, stats.SummaryURL != "")
+		stats.State = decideState(result, opts.ApproveBelow, stats.SummaryURL != "", openSurvivors)
 	}
 	return stats, nil
 }

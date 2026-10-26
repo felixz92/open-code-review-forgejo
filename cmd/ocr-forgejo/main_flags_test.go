@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"strings"
 	"testing"
 )
 
@@ -204,5 +205,40 @@ func TestValidateRejectsResolutionTrackingWithoutStickySummary(t *testing.T) {
 	sticky := &Config{URL: "https://x", Repo: "o/r", PRIndex: 1, StickySummary: true, ResolutionTracking: true, IncrementalOverlapThresh: 0.6}
 	if err := sticky.validate(fs); err != nil {
 		t.Fatalf("tracking with sticky summary must validate: %v", err)
+	}
+}
+
+func TestParseFlagsCoverageDiff(t *testing.T) {
+	cfg, err := ParseFlags([]string{
+		"--url", "https://forge.example.com", "--repo", "o/r", "--pr", "1",
+		"--resolution-tracking", "--coverage-diff", "/tmp/coverage.diff",
+		"/tmp/result.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CoverageDiffPath != "/tmp/coverage.diff" {
+		t.Fatalf("CoverageDiffPath = %q, want /tmp/coverage.diff", cfg.CoverageDiffPath)
+	}
+}
+
+func TestValidateRejectsCoverageDiffWithoutResolutionTracking(t *testing.T) {
+	fs := flag.NewFlagSet("t", flag.ContinueOnError)
+	// Coverage-aware resolution only means something with the ledger on;
+	// a bare coverage diff must fail fast instead of silently approving.
+	_, err := ParseFlags([]string{
+		"--url", "https://forge.example.com", "--repo", "o/r", "--pr", "1",
+		"--coverage-diff", "/tmp/coverage.diff",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--coverage-diff") {
+		t.Fatalf("ParseFlags err = %v, want --coverage-diff validation error", err)
+	}
+	c := &Config{URL: "https://x", Repo: "o/r", PRIndex: 1, CoverageDiffPath: "/tmp/coverage.diff", IncrementalOverlapThresh: 0.6}
+	if err := c.validate(fs); err == nil {
+		t.Fatal("--coverage-diff without --resolution-tracking must be rejected")
+	}
+	tracked := &Config{URL: "https://x", Repo: "o/r", PRIndex: 1, StickySummary: true, ResolutionTracking: true, CoverageDiffPath: "/tmp/coverage.diff", IncrementalOverlapThresh: 0.6}
+	if err := tracked.validate(fs); err != nil {
+		t.Fatalf("coverage diff with tracking must validate: %v", err)
 	}
 }

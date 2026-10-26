@@ -172,6 +172,40 @@ func TestForgejoIssueComments(t *testing.T) {
 	}
 }
 
+func TestForgejoIssueCommentsPaginates(t *testing.T) {
+	var pages []string
+	p, _ := newTestForgejo(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/repos/owner/repo/issues/42/comments" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		page := r.URL.Query().Get("page")
+		pages = append(pages, page)
+		switch page {
+		case "1", "":
+			var ids []string
+			for i := 1; i <= pageSize; i++ {
+				ids = append(ids, fmt.Sprintf(`{"id": %d, "body": "p1"}`, i))
+			}
+			_, _ = fmt.Fprint(w, "["+strings.Join(ids, ",")+"]")
+		case "2":
+			_, _ = fmt.Fprint(w, `[{"id": 999, "body": "p2"}]`)
+		default:
+			_, _ = fmt.Fprint(w, `[]`)
+		}
+	})
+	comments, err := p.ListIssueComments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comments) != pageSize+1 || comments[len(comments)-1].ID != 999 {
+		t.Fatalf("expected %d comments across both pages, got %d (last: %+v)", pageSize+1, len(comments), comments)
+	}
+	if len(pages) != 2 {
+		t.Fatalf("expected exactly 2 page requests (stop on the short page), got %v", pages)
+	}
+}
+
 func TestForgejoReviewFlow(t *testing.T) {
 	p, _ := newTestForgejo(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {

@@ -134,3 +134,17 @@ func TestRunMalformedJSONExitsOneWithLogTail(t *testing.T) {
 	}
 	readRunStats(t, statsPath) // stats file still written on this exit path
 }
+
+func TestRunPrintLastReviewedWritesStatsFile(t *testing.T) {
+	input, stats := writeRunFixture(t, `{"comments": [], "warnings": []}`)
+	code := run(&Config{DryRun: true, PrintLastReviewed: true, InputPath: input, StatsFilePath: stats, PRIndex: 1})
+	if code != 0 {
+		t.Fatalf("query mode must exit 0, got %d", code)
+	}
+	// Every exit path writes the stats file; the query mode posts
+	// nothing, so the stats stay zeroed.
+	data := readRunStats(t, stats)
+	if !strings.Contains(data, "OCR_RUN_STATUS=completed") {
+		t.Fatalf("query mode must still write the stats file, got %q", data)
+	}
+}

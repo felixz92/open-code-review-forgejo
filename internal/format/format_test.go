@@ -238,3 +238,24 @@ func TestBuildFailureBodyNamesFailureWithoutMessage(t *testing.T) {
 		t.Fatalf("BuildFailureBody = %q, want %q", got, want)
 	}
 }
+
+func TestLastReviewedMarkerFmt(t *testing.T) {
+	want := "<!-- ocr-last-reviewed:%s -->"
+	if LastReviewedMarkerFmt != want {
+		t.Fatalf("LastReviewedMarkerFmt = %q, want %q", LastReviewedMarkerFmt, want)
+	}
+}
+
+func TestFormatLastReviewedMarker(t *testing.T) {
+	got := FormatLastReviewedMarker("abc123")
+	want := "<!-- ocr-last-reviewed:abc123 -->"
+	if got != want {
+		t.Fatalf("FormatLastReviewedMarker = %q, want %q", got, want)
+	}
+}
+
+func TestFormatLastReviewedMarkerEmptySHA(t *testing.T) {
+	if got := FormatLastReviewedMarker(""); got != "" {
+		t.Fatalf("FormatLastReviewedMarker(\"\") = %q, want empty string", got)
+	}
+}
