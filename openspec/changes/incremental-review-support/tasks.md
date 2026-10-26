@@ -14,7 +14,7 @@
 
 ## 3. Coverage-aware ledger resolution
 
-- [ ] 3.1 Add the `--coverage-diff <path>` flag and plumb it into publish options (absent ⇒ nil coverage) (TDD: flag parsing test; `go test ./cmd/...`)
+- [ ] 3.1 Add the `--coverage-diff <path>` flag, plumb it into publish options (absent ⇒ nil coverage), and reject `--coverage-diff` without `--resolution-tracking` in `Config.validate` (mirroring the existing sticky-summary validation) (TDD: failing flag-parsing and validation tests first; `go test ./cmd/...`)
 - [ ] 3.2 Implement coverage gating in `mergeLedger` and `trackedNoIssuesBody`: an unmatched open entry resolves only when `internal/diffinv` classifies its path+span as valid against the coverage diff; invalid/unknown/out-of-diff entries stay open; unreadable or unparseable diff means no coverage (nothing resolves, warning logged, no silent full-coverage fallback); nil coverage keeps current semantics (TDD: failing tests first for in-diff resolves, out-of-diff stays open, in-diff re-reported stays open with span refresh, no-flag resolves as before, unparseable diff resolves nothing; `go test ./internal/publish/...`)
 - [ ] 3.3 Run `serena_get_diagnostics_for_file` on `internal/publish/ledger.go` and touched files; fix any reported errors
 

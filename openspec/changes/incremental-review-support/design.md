@@ -70,6 +70,17 @@ wrongly resolves.
 "delta clean, N findings remain open"; `openSurvivors == 0` ⇒ APPROVED as
 before. Computed from the merged ledger before the state is submitted.
 
+**D6 — `--coverage-diff` requires `--resolution-tracking`.**
+Downgrade and ledger safety only exist with tracking on, so a bare coverage
+diff must not silently grant full-approval semantics on a delta run. Reject
+the combination in `Config.validate` (mirroring the existing
+"--resolution-tracking requires the sticky summary" check,
+`cmd/ocr-forgejo/main.go:142`) rather than widening the downgrade guard:
+fail-fast beats a surprising silent behavior change for the untracked path.
+Alternative considered — extending the downgrade guard to fire on coverage
+presence — rejected: without a ledger there are no open entries to count, so
+the downgrade would be a no-op and the hole would remain.
+
 **D5 — Empty-output query mode exits 0.**
 Mirrors advisory-step requirements; Argo `continueOn` semantics stay untouched.
 

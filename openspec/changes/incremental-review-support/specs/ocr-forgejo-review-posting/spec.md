@@ -25,6 +25,8 @@ The CLI SHALL embed an HTML marker `<!-- ocr-last-reviewed:<sha> -->` in the sti
 
 The CLI SHALL support a `--print-last-reviewed` mode: it locates the sticky summary comment (the comment carrying the summary marker, newest match first, paginating the issue-comment listing as needed), extracts the SHA from the last-reviewed marker, and prints it to stdout. The mode SHALL authenticate with the existing `GIT_TOKEN` environment variable and use the existing `--url`, `--repo`, and `--pr` flags. When no sticky summary exists, the summary carries no last-reviewed marker, or the Forgejo API fails, the CLI SHALL print nothing (empty output) and exit 0 — a query failure MUST NOT surface as an error, so callers can fall back to a full review.
 
+The CLI SHALL reject `--coverage-diff` without `--resolution-tracking` with a fail-fast flag-validation error, because coverage-aware approval safety depends on the ledger; a bare coverage diff without tracking would let a clean delta run approve while only the delta was reviewed.
+
 #### Scenario: Marker found
 
 - **WHEN** the sticky summary contains `<!-- ocr-last-reviewed:abc123 -->` and the CLI runs with `--print-last-reviewed`
@@ -44,6 +46,11 @@ The CLI SHALL support a `--print-last-reviewed` mode: it locates the sticky summ
 
 - **WHEN** the CLI runs with `--print-last-reviewed`
 - **THEN** it creates no reviews, comments, or summary updates on the PR
+
+#### Scenario: Coverage diff without tracking is rejected
+
+- **WHEN** the CLI is invoked with `--coverage-diff` but without `--resolution-tracking`
+- **THEN** the CLI fails fast with a flag-validation error before any Forgejo call
 
 ## MODIFIED Requirements
 

@@ -33,7 +33,10 @@ because every run today implicitly re-reviews the whole PR.
 
 Non-goal (this repo): the task-ci.yaml workflow wiring (marker read-back,
 `--from` computation, `--background` prompt, coverage-diff production) lives in
-the homelab repo and is tracked separately.
+the homelab repo and is tracked separately. Note for that change: the query
+mode authenticates via `GIT_TOKEN`, which the `ocr-review` template in
+task-ci.yaml must export (from the forgejo-review-bot secret) before calling
+`--print-last-reviewed` — that step currently only has `FORGEJO_ACCESS_TOKEN`.
 
 ## Capabilities
 
