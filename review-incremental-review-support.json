@@ -1,0 +1,328 @@
+{
+  "status": "partial",
+  "llm": {
+    "provider": "kilo",
+    "model": "z-ai/glm-5.3-flash"
+  },
+  "message": "Review partially complete: 3 finding(s); 1 of 13 selected item(s) failed.",
+  "summary": {
+    "files_reviewed": 13,
+    "comments": 3,
+    "total_tokens": 8668009,
+    "input_tokens": 8223135,
+    "output_tokens": 444874,
+    "cache_read_tokens": 6810880,
+    "elapsed": "30m2s"
+  },
+  "tool_calls": {
+    "total": 181,
+    "by_tool": {
+      "code_comment": 2,
+      "code_search": 80,
+      "file_find": 8,
+      "file_read": 88,
+      "file_read_diff": 3
+    },
+    "failure": 0,
+    "failure_by_tool": {},
+    "failure_details": []
+  },
+  "comments": [
+    {
+      "path": "cmd/ocr-forgejo/main.go",
+      "content": "The query mode accepts an `ocr-last-reviewed` marker from ANY PR comment that happens to contain `format.SummaryMarker`, with no check that the comment was authored by the review bot. `IssueCommentInfo` intentionally carries only ID+Body, and `ListIssueComments` returns raw Forgejo comments, so any user who can comment on the PR can post a body like `\u003c!-- ocr-summary --\u003e\\n\u003c!-- ocr-last-reviewed:\u003ccurrent head sha\u003e --\u003e` and forge the marker. Since the printed SHA is consumed by the workflow to compute the `--from` delta range for the next run (per the proposal), a forged marker can shrink or eliminate the review range; with resolution tracking it can contribute to an unearned APPROVE. Suggest gating the lookup on the bot's own comments: expose the author login in `IssueCommentInfo` (the SDK comment carries poster info) and skip comments whose author is not the bot identity returned by `WhoAmI()`.",
+      "suggestion_code": "\tme, err := p.WhoAmI()\n\tif err != nil {\n\t\treturn \"\", err\n\t}\n\tfor i := len(comments) - 1; i \u003e= 0; i-- {\n\t\t// Only trust the bot's own summary comments: without the\n\t\t// author check any commenter can plant a forged last-reviewed\n\t\t// marker and steer the next run's delta range.\n\t\tif comments[i].Author != me || !strings.Contains(comments[i].Body, format.SummaryMarker) {\n\t\t\tcontinue\n\t\t}",
+      "existing_code": "\tfor i := len(comments) - 1; i \u003e= 0; i-- {\n\t\tif !strings.Contains(comments[i].Body, format.SummaryMarker) {\n\t\t\tcontinue\n\t\t}",
+      "start_line": 293,
+      "end_line": 296,
+      "category": "security",
+      "severity": "high"
+    },
+    {
+      "path": "cmd/ocr-forgejo/main.go",
+      "content": "This regex literal duplicates the marker syntax that already lives in `format.LastReviewedMarkerFmt` (\"\u003c!-- ocr-last-reviewed:%s --\u003e\"). They agree today, but nothing ties them together: a future edit to the format constant without touching this regex silently yields zero matches, so the query mode degrades to always-full reviews (prints nothing, exits 0) with no error signal. Derive the pattern from the format constant so there is a single source of truth.",
+      "suggestion_code": "// lastReviewedMarkerRe is derived from format.LastReviewedMarkerFmt so\n// the write-side format and the read-side pattern cannot drift.\nvar lastReviewedMarkerRe = regexp.MustCompile(\n\tstrings.Replace(regexp.QuoteMeta(format.LastReviewedMarkerFmt), \"%s\", `(\\S+)`, 1))",
+      "existing_code": "var lastReviewedMarkerRe = regexp.MustCompile(`\u003c!-- ocr-last-reviewed:(\\S+) --\u003e`)",
+      "start_line": 283,
+      "end_line": 283,
+      "category": "maintainability",
+      "severity": "low"
+    },
+    {
+      "path": "internal/publish/ledger.go",
+      "content": "Span staleness makes 'Valid' classification an unsound proof that \"the code under this finding was provably changed\" (as the coverage comments claim). Ledger entries carry spans recorded at a previous head's line numbering (they are only refreshed when a candidate re-reports/matches), while the coverage diff's hunk ranges are in the current head's numbering — Classify does a numeric containment check with no old→new line mapping. On a delta push that inserts/deletes lines above a tracked finding, an untouched, un-re-reported finding's stale span can numerically land inside a hunk covering different, newly inserted lines: e.g. hunk `@@ -1,5 +1,25 @@` (20 lines inserted at the top of a.go) plus an open entry `a.go L10-L20` whose real code now sits at L31-L41 → Classify(P, 10, 20) == Valid → the still-live finding is stamped ✅ RESOLVED, and with zero survivors the clean delta run then submits APPROVED via decideState (the D4 downgrade is silently bypassed) — exactly the failure mode this flag was added to prevent. The only documented edge (D3) is the safe, false-Invalid direction. Suggest anchoring resolution on congruence rather than bare containment: retain the old-side ranges per hunk in the Inventory and map the entry's stale span into the new-numbering (or union old-new span overlap across each hunk's deletion/insertion pair) before classifying; otherwise document the span-drift edge like the pure-deletion one.",
+      "suggestion_code": "// resolves reports whether an unmatched open entry may resolve under this\n// coverage state at the given path and span.\n//\n// The entry span is only a proof of change when it maps into the new\n// numbering: entries are recorded at a prior head's line numbers, so the\n// coverage diff must supply the old-side ranges to bridge span drift\n// before containment is checked.\nfunc (c *Coverage) resolves(path string, start, end int64) bool {\n\tif c == nil {\n\t\treturn true // no coverage flag: full-range semantics\n\t}\n\tif c.Inv == nil {\n\t\treturn false // no coverage: resolve nothing\n\t}\n\treturn c.Inv.Classify(path, start, end) == diffinv.Valid\n}",
+      "existing_code": "// resolves reports whether an unmatched open entry may resolve under this\n// coverage state at the given path and span.\nfunc (c *Coverage) resolves(path string, start, end int64) bool {\n\tif c == nil {\n\t\treturn true // no coverage flag: full-range semantics\n\t}\n\tif c.Inv == nil {\n\t\treturn false // no coverage: resolve nothing\n\t}\n\treturn c.Inv.Classify(path, start, end) == diffinv.Valid\n}",
+      "start_line": 65,
+      "end_line": 75,
+      "category": "bug",
+      "severity": "high"
+    }
+  ],
+  "groups": [
+    {
+      "label": "OCR ForgeJo command: query flag support and tests",
+      "files": [
+        "cmd/ocr-forgejo/main.go",
+        "cmd/ocr-forgejo/main_flags_test.go",
+        "cmd/ocr-forgejo/main_query_test.go",
+        "cmd/ocr-forgejo/main_run_test.go"
+      ]
+    },
+    {
+      "label": "Format package changes and tests",
+      "files": [
+        "internal/format/format.go",
+        "internal/format/format_test.go"
+      ]
+    },
+    {
+      "label": "Poster package changes and tests",
+      "files": [
+        "internal/poster/poster.go",
+        "internal/poster/poster_test.go"
+      ]
+    },
+    {
+      "label": "Publish pipeline: ledger and publish logic with tests",
+      "files": [
+        "internal/publish/ledger.go",
+        "internal/publish/ledger_test.go",
+        "internal/publish/publish.go",
+        "internal/publish/publish_test.go"
+      ]
+    },
+    {
+      "label": "OpenSpec archive rename",
+      "files": [
+        "openspec/changes/archive/2026-10-26-incremental-review-support/.openspec.yaml"
+      ]
+    }
+  ],
+  "warnings": [
+    {
+      "file": "internal/publish/ledger.go,internal/publish/ledger_test.go,internal/publish/publish.go,internal/publish/publish_test.go",
+      "message": "round 2: LLM completion error: caller deadline exceeded: context deadline exceeded",
+      "type": "review_round_failed"
+    }
+  ],
+  "session_id": "f884e5b1-0913-4b61-8eac-2e56c489bd3e",
+  "manifest": {
+    "schema_version": "ocr.run-manifest/v1",
+    "run_id": "f884e5b1-0913-4b61-8eac-2e56c489bd3e",
+    "operation": "review",
+    "terminal_state": "partial",
+    "repository": {
+      "identity_sha256": "b83caa1806aba5e7743a2e94956ee78125fa661a7abbfa4b784dad13898dc40c"
+    },
+    "input": {
+      "mode": "range",
+      "requested_from": "main",
+      "requested_head": "incremental-review-support",
+      "resolved_base": "4b2868649ea09f53faf54f1f94650778e10d1f0e",
+      "resolved_head": "5136653e41d73043959cda4d25a66f229f2326b2",
+      "exact_range": "4b2868649ea09f53faf54f1f94650778e10d1f0e..5136653e41d73043959cda4d25a66f229f2326b2",
+      "source_artifact_sha256": "ff8734f15c561104aff71f23cc656c64c1d1c7fe9634ec30f72fc33a56201353"
+    },
+    "execution": {
+      "ocr_version": "v1.13.3",
+      "provider": "kilo",
+      "model": "z-ai/glm-5.3-flash",
+      "configured_concurrency": 8,
+      "rule_config_sha256": "5bd6b55170c8cf93cb9971983f1e95928f323286f45b9249c7f6e7ddb9480d89",
+      "runtime_config_sha256": "19e96a35f8f5b28b84ccbba05bd712b2f990bb63dc66e8c9d94df4ac056af786"
+    },
+    "coverage": {
+      "selected": [
+        {
+          "item_id": "05852c4ee7b5de4860469d2eb7cee95fe49fd16f78a958ba714ef1ec9352dfd5",
+          "path": "cmd/ocr-forgejo/main_run_test.go",
+          "fingerprint": "a2130ea44e7cae48641a8723c092fe149ec7e0da42ab2db16d3aff9ddf82773e"
+        },
+        {
+          "item_id": "0fa4e5cada1c6a3af556df38f821b047df4f123aa781f5fd8ffe35c996a2954e",
+          "path": "internal/publish/publish_test.go",
+          "fingerprint": "83cbd86f6cf99ce0ec995709f56772fc166486407f26939cdda8b5adffdae6d4"
+        },
+        {
+          "item_id": "27d0e81e6c92602603723fc741221d6977b858d70d94047ecbb96763cc235f04",
+          "path": "internal/publish/ledger.go",
+          "fingerprint": "b61cb5104487d3de34aaef9cec8489bcb80df54a63f1e44756d788a8b676635a"
+        },
+        {
+          "item_id": "3d5f194eb7915fca413dd7c86b809669e2980aeec99d28a5efb2d9086c18646d",
+          "path": "cmd/ocr-forgejo/main_query_test.go",
+          "fingerprint": "def09c18941e76f82f04cb7dfb0b925f0a79ae34c7ea1cbabd81df4d6ea34fb4"
+        },
+        {
+          "item_id": "641e4482979e2303766f26fca762cf0578c50d02c8ae8b0d847ba971b185f002",
+          "path": "internal/poster/poster.go",
+          "fingerprint": "1752fc7f4331bfd8b9c64115f693f80b7d23d567bcadee04d7cd949de1ddf16e"
+        },
+        {
+          "item_id": "6a21e4b303c8fdf917c12c75cac039e2426c6472647a1db7e63cb8b25a9f5989",
+          "path": "internal/format/format.go",
+          "fingerprint": "deb9f40ad3b22966cf24534b3620eb4c9f6c861243bddc0cf08391049f8c5f32"
+        },
+        {
+          "item_id": "6ae64af69f7bc344be038fde1e4faf0ed1307db453e37af94b6fb535db661d04",
+          "path": "internal/format/format_test.go",
+          "fingerprint": "86228b03e5bc3a9cef2557a30e5536b1e34ca7272cafae2e6752343cd44e9ce8"
+        },
+        {
+          "item_id": "8e97abcb3788d7cff73086d473e5996ed12c92e49c7a4664409c35e19a73fe02",
+          "path": "cmd/ocr-forgejo/main_flags_test.go",
+          "fingerprint": "9b605f4c212d44d89aa9ad4d1ad2ba47ea3d7f4b74ca552b422e0cd3def18d02"
+        },
+        {
+          "item_id": "b87c8d5883656e57cad8dce178e70f039d594a1d60be65103d8f1ed7ea61b16b",
+          "path": "internal/publish/publish.go",
+          "fingerprint": "c1b561e9f1524ff5ea5af46bb1c8ad74da707a1249884e36c876d2ac4b25abf3"
+        },
+        {
+          "item_id": "cc31d9b8f007e12d7a03eb3d83a2ad1f0d6f578f05a50925547e8ff8df984bd7",
+          "path": "cmd/ocr-forgejo/main.go",
+          "fingerprint": "b608fbae25a8d36fbf109e85d24969c5980557da0a06765917c4a59fca213148"
+        },
+        {
+          "item_id": "d14d901cff20bd8eec5bfd9372433e288f9a98e0d4d644161fd8eb2938d37771",
+          "path": "internal/poster/poster_test.go",
+          "fingerprint": "9db56f6874bddab497ac293eb90d83bc3b4e7dbf7e2979ac3a9e60d2d8547b59"
+        },
+        {
+          "item_id": "e6ff5593cf7acc21afe61fe4938f46d35c6b0f1cc05ec4365d3a83f083ed00a0",
+          "path": "openspec/changes/archive/2026-10-26-incremental-review-support/.openspec.yaml",
+          "old_path": "openspec/changes/incremental-review-support/.openspec.yaml",
+          "fingerprint": "f31e9205df9b749753c49738690f4f47194ab26a27338ea96cfee516754cd854"
+        },
+        {
+          "item_id": "f5a2ede831ab464801d41b56ab9256ac7f9573f81f0b3b7d692641235cbade7b",
+          "path": "internal/publish/ledger_test.go",
+          "fingerprint": "d6498899b734de1e0025fbfc1e02b0ea41cd7a11f450e1ecbdfc54fd29fc2e2b"
+        }
+      ],
+      "completed": [
+        {
+          "item_id": "05852c4ee7b5de4860469d2eb7cee95fe49fd16f78a958ba714ef1ec9352dfd5",
+          "path": "cmd/ocr-forgejo/main_run_test.go",
+          "fingerprint": "a2130ea44e7cae48641a8723c092fe149ec7e0da42ab2db16d3aff9ddf82773e"
+        },
+        {
+          "item_id": "0fa4e5cada1c6a3af556df38f821b047df4f123aa781f5fd8ffe35c996a2954e",
+          "path": "internal/publish/publish_test.go",
+          "fingerprint": "83cbd86f6cf99ce0ec995709f56772fc166486407f26939cdda8b5adffdae6d4"
+        },
+        {
+          "item_id": "27d0e81e6c92602603723fc741221d6977b858d70d94047ecbb96763cc235f04",
+          "path": "internal/publish/ledger.go",
+          "fingerprint": "b61cb5104487d3de34aaef9cec8489bcb80df54a63f1e44756d788a8b676635a"
+        },
+        {
+          "item_id": "3d5f194eb7915fca413dd7c86b809669e2980aeec99d28a5efb2d9086c18646d",
+          "path": "cmd/ocr-forgejo/main_query_test.go",
+          "fingerprint": "def09c18941e76f82f04cb7dfb0b925f0a79ae34c7ea1cbabd81df4d6ea34fb4"
+        },
+        {
+          "item_id": "641e4482979e2303766f26fca762cf0578c50d02c8ae8b0d847ba971b185f002",
+          "path": "internal/poster/poster.go",
+          "fingerprint": "1752fc7f4331bfd8b9c64115f693f80b7d23d567bcadee04d7cd949de1ddf16e"
+        },
+        {
+          "item_id": "6a21e4b303c8fdf917c12c75cac039e2426c6472647a1db7e63cb8b25a9f5989",
+          "path": "internal/format/format.go",
+          "fingerprint": "deb9f40ad3b22966cf24534b3620eb4c9f6c861243bddc0cf08391049f8c5f32"
+        },
+        {
+          "item_id": "6ae64af69f7bc344be038fde1e4faf0ed1307db453e37af94b6fb535db661d04",
+          "path": "internal/format/format_test.go",
+          "fingerprint": "86228b03e5bc3a9cef2557a30e5536b1e34ca7272cafae2e6752343cd44e9ce8"
+        },
+        {
+          "item_id": "8e97abcb3788d7cff73086d473e5996ed12c92e49c7a4664409c35e19a73fe02",
+          "path": "cmd/ocr-forgejo/main_flags_test.go",
+          "fingerprint": "9b605f4c212d44d89aa9ad4d1ad2ba47ea3d7f4b74ca552b422e0cd3def18d02"
+        },
+        {
+          "item_id": "b87c8d5883656e57cad8dce178e70f039d594a1d60be65103d8f1ed7ea61b16b",
+          "path": "internal/publish/publish.go",
+          "fingerprint": "c1b561e9f1524ff5ea5af46bb1c8ad74da707a1249884e36c876d2ac4b25abf3"
+        },
+        {
+          "item_id": "cc31d9b8f007e12d7a03eb3d83a2ad1f0d6f578f05a50925547e8ff8df984bd7",
+          "path": "cmd/ocr-forgejo/main.go",
+          "fingerprint": "b608fbae25a8d36fbf109e85d24969c5980557da0a06765917c4a59fca213148"
+        },
+        {
+          "item_id": "d14d901cff20bd8eec5bfd9372433e288f9a98e0d4d644161fd8eb2938d37771",
+          "path": "internal/poster/poster_test.go",
+          "fingerprint": "9db56f6874bddab497ac293eb90d83bc3b4e7dbf7e2979ac3a9e60d2d8547b59"
+        },
+        {
+          "item_id": "f5a2ede831ab464801d41b56ab9256ac7f9573f81f0b3b7d692641235cbade7b",
+          "path": "internal/publish/ledger_test.go",
+          "fingerprint": "d6498899b734de1e0025fbfc1e02b0ea41cd7a11f450e1ecbdfc54fd29fc2e2b"
+        }
+      ],
+      "reused": [],
+      "failed": [
+        {
+          "item_id": "e6ff5593cf7acc21afe61fe4938f46d35c6b0f1cc05ec4365d3a83f083ed00a0",
+          "path": "openspec/changes/archive/2026-10-26-incremental-review-support/.openspec.yaml",
+          "old_path": "openspec/changes/incremental-review-support/.openspec.yaml",
+          "fingerprint": "f31e9205df9b749753c49738690f4f47194ab26a27338ea96cfee516754cd854",
+          "classification": "timeout",
+          "reason": "LLM request timed out; configure OCR_LLM_TIMEOUT or provider timeout_sec"
+        }
+      ],
+      "waived": []
+    },
+    "elapsed_ms": 1802299
+  },
+  "retry_report": {
+    "schema_version": "ocr.llm-retry-report/v1",
+    "total_requests": 156,
+    "retried_requests": 0,
+    "total_retries": 0,
+    "recovered_requests": 0,
+    "failed_requests": 2,
+    "cancelled_requests": 0,
+    "requests": [
+      {
+        "logical_request_id": "315be8e868387fa5166ba0edd16b5a745ca55be4d2c8904e095972b9cccaa7b2",
+        "provider": "kilo",
+        "model": "z-ai/glm-5.3-flash",
+        "file_path": "internal/publish/ledger.go,internal/publish/ledger_test.go,internal/publish/publish.go,internal/publish/publish_test.go",
+        "task_type": "main_task",
+        "request_no": 49,
+        "outcome": "failed",
+        "attempts": [
+          {
+            "attempt": 1,
+            "outcome": "error",
+            "error_class": "timeout",
+            "failure_phase": "context",
+            "duration_to_headers_ms": 34673
+          }
+        ]
+      },
+      {
+        "logical_request_id": "66374af68b04494ca8f3f39bd6f179da71955c41c10324a973203431cfccbaab",
+        "provider": "kilo",
+        "model": "z-ai/glm-5.3-flash",
+        "file_path": "openspec/changes/archive/2026-10-26-incremental-review-support/.openspec.yaml",
+        "task_type": "main_task",
+        "request_no": 3,
+        "outcome": "failed",
+        "attempts": [
+          {
+            "attempt": 1,
+            "outcome": "error",
+            "error_class": "timeout",
+            "failure_phase": "context",
+            "duration_to_headers_ms": 300004
+          }
+        ]
+      }
+    ]
+  }
+}
