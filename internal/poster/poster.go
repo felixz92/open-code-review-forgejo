@@ -52,8 +52,9 @@ type ReviewCommentInfo struct {
 
 // IssueCommentInfo summarizes an issue (PR) comment.
 type IssueCommentInfo struct {
-	ID   int64
-	Body string
+	ID     int64
+	Body   string
+	Author string
 }
 
 // PullRequestInfo summarizes a pull request.
@@ -300,7 +301,11 @@ func (p *ForgejoPoster) ListIssueComments() ([]IssueCommentInfo, error) {
 				return resp, err
 			}
 			for _, c := range comments {
-				batch = append(batch, IssueCommentInfo{ID: c.ID, Body: c.Body})
+				var author string
+				if c.Poster != nil {
+					author = c.Poster.UserName
+				}
+				batch = append(batch, IssueCommentInfo{ID: c.ID, Body: c.Body, Author: author})
 			}
 			return resp, nil
 		})

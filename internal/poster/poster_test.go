@@ -206,6 +206,29 @@ func TestForgejoIssueCommentsPaginates(t *testing.T) {
 	}
 }
 
+func TestForgejoIssueCommentsCarryAuthor(t *testing.T) {
+	p, _ := newTestForgejo(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/repos/owner/repo/issues/42/comments" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = fmt.Fprint(w, `[{"id": 7, "body": "y", "user": {"login": "ci-bot"}}, {"id": 8, "body": "anon"}]`)
+	})
+	comments, err := p.ListIssueComments()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comments) != 2 {
+		t.Fatalf("expected 2 comments, got %d", len(comments))
+	}
+	if comments[0].Author != "ci-bot" {
+		t.Fatalf("author must come from the poster login, got %q", comments[0].Author)
+	}
+	if comments[1].Author != "" {
+		t.Fatalf("comment without poster must carry an empty author, got %q", comments[1].Author)
+	}
+}
+
 func TestForgejoReviewFlow(t *testing.T) {
 	p, _ := newTestForgejo(t, func(w http.ResponseWriter, r *http.Request) {
 		switch {

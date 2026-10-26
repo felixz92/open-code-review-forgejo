@@ -286,12 +286,41 @@ func TestMergeLedgerNoCoverageResolvesNothing(t *testing.T) {
 	}
 }
 
+// insertionDiff adds two lines above the touched region: the new-side range
+// covers lines 1-5, but only old lines 1-3 were touched. An open entry whose
+// stale span numerically lands on lines 4-5 sits over freshly inserted lines
+// it does not describe, so coverage must not prove it changed.
+const staleSpanDiff = `diff --git a/a.go b/a.go
+--- a/a.go
++++ b/a.go
+@@ -1,3 +1,5 @@
++inserted1()
++inserted2()
+ keep1()
+ keep2()
+ keep3()
+`
+
+func TestMergeLedgerStaleSpanOverInsertionHunkStaysOpen(t *testing.T) {
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 4, EndLine: 5, FirstSeen: "run-1"}},
+	}
+	next, resolved := mergeLedger(prior, coverageFrom(t, staleSpanDiff), nil, nil, "run-2", "2026-10-26", 0.6)
+	if len(resolved) != 0 {
+		t.Fatalf("stale span must not resolve from an insertion hunk elsewhere, got %v", resolved)
+	}
+	if len(next.Open) != 1 || next.Open[0].StartLine != 4 {
+		t.Fatalf("stale entry must stay open, got %+v", next.Open)
+	}
+}
+
 func loadLedgerWithStickyBody(t *testing.T, body string) *format.Ledger {
 	t.Helper()
 	f := newFake()
 	f.issueComments = []poster.IssueCommentInfo{
-		{ID: 1, Body: "unrelated"},
-		{ID: 2, Body: format.SummaryMarker + "\n<!-- ocr-summary run: own -->\nold body\n" + body},
+		{ID: 1, Author: "ci-bot", Body: "unrelated"},
+		{ID: 2, Author: "ci-bot", Body: format.SummaryMarker + "\n<!-- ocr-summary run: own -->\nold body\n" + body},
 	}
 	return loadLedger(f, Options{RunTag: "t", Sticky: true})
 }
@@ -330,13 +359,28 @@ func TestLoadLedgerFreshWhenSummaryLacksLedger(t *testing.T) {
 	}
 }
 
+func TestLoadLedgerIgnoresForeignSummary(t *testing.T) {
+	ledger := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 1, EndLine: 1, FirstSeen: "run-1"}},
+	}
+	f := newFake()
+	f.issueComments = []poster.IssueCommentInfo{
+		{ID: 2, Author: "imposter", Body: format.SummaryMarker + "\n" + format.EncodeLedger(ledger)},
+	}
+	l := loadLedger(f, Options{RunTag: "t", Sticky: true})
+	if l == nil || len(l.Open) != 0 {
+		t.Fatalf("summary forged by another author must not feed the ledger, got %+v", l)
+	}
+}
+
 func TestPublishCleanRunResolvesAllOpenLedger(t *testing.T) {
 	prior := &format.Ledger{
 		Version: format.LedgerVersion,
 		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 10, EndLine: 10, FirstSeen: "run-1", Content: "content a.go"}},
 	}
 	f := newFake()
-	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Author: "ci-bot", Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
 	r := &review.Result{Message: "nothing to comment on"}
 	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true})
 	if err != nil {
@@ -370,7 +414,7 @@ func TestPublishCleanDeltaRunKeepsUncoveredEntriesOpen(t *testing.T) {
 		Open:    []format.LedgerEntry{{Path: "z.go", StartLine: 5, EndLine: 5, FirstSeen: "run-1", Content: "still broken"}},
 	}
 	f := newFake()
-	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Author: "ci-bot", Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
 	r := &review.Result{Message: "nothing to comment on"}
 	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true, Coverage: coverageFrom(t, covDiff)})
 	if err != nil {
@@ -404,7 +448,7 @@ func TestPublishCleanDeltaRunDowngradesToComment(t *testing.T) {
 		Open:    []format.LedgerEntry{{Path: "z.go", StartLine: 5, EndLine: 5, FirstSeen: "run-1", Content: "still broken"}},
 	}
 	f := newFake()
-	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Author: "ci-bot", Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
 	r := &review.Result{Message: "nothing to comment on"}
 	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true, Coverage: coverageFrom(t, covDiff)})
 	if err != nil {
@@ -424,7 +468,7 @@ func TestPublishCleanRunZeroSurvivorsApproves(t *testing.T) {
 		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 2, EndLine: 3, FirstSeen: "run-1", Content: "fixed now"}},
 	}
 	f := newFake()
-	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Author: "ci-bot", Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
 	r := &review.Result{Message: "nothing to comment on"}
 	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true, Coverage: coverageFrom(t, covDiff)})
 	if err != nil {
@@ -444,7 +488,7 @@ func TestPublishLowFindingsWithSurvivorsDowngradeToComment(t *testing.T) {
 		Open:    []format.LedgerEntry{{Path: "z.go", StartLine: 5, EndLine: 5, FirstSeen: "run-1", Content: "still broken"}},
 	}
 	f := newFake()
-	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Author: "ci-bot", Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
 	r := result(c("a.go", 1, 2, "low"))
 	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true, Coverage: coverageFrom(t, covDiff)})
 	if err != nil {
@@ -464,7 +508,7 @@ func TestPublishDowngradedRunNotesRemainingOpen(t *testing.T) {
 		Open:    []format.LedgerEntry{{Path: "z.go", StartLine: 5, EndLine: 5, FirstSeen: "run-1", Content: "still broken"}},
 	}
 	f := newFake()
-	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Author: "ci-bot", Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
 	r := &review.Result{Message: "nothing to comment on"}
 	if _, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true, Coverage: coverageFrom(t, covDiff)}); err != nil {
 		t.Fatal(err)
@@ -481,7 +525,7 @@ func TestPublishNoteAbsentWithoutDowngrade(t *testing.T) {
 		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 2, EndLine: 3, FirstSeen: "run-1", Content: "fixed now"}},
 	}
 	f := newFake()
-	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Author: "ci-bot", Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
 	r := &review.Result{Message: "nothing to comment on"}
 	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true, Coverage: coverageFrom(t, covDiff)})
 	if err != nil {
@@ -504,7 +548,7 @@ func TestPublishDowngradeNoteWithoutInlineReview(t *testing.T) {
 		Open:    []format.LedgerEntry{{Path: "z.go", StartLine: 5, EndLine: 5, FirstSeen: "run-1", Content: "still broken"}},
 	}
 	f := newFake()
-	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Author: "ci-bot", Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
 	r := result(c("a.go", 0, 0, "low"))
 	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true, Coverage: coverageFrom(t, covDiff)})
 	if err != nil {
@@ -521,7 +565,7 @@ func TestPublishDowngradeNoteWithoutInlineReview(t *testing.T) {
 
 func TestPublishCleanRunEmptyLedgerKeepsExistingBody(t *testing.T) {
 	f := newFake()
-	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body"}}
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Author: "ci-bot", Body: format.SummaryMarker + "\nold body"}}
 	r := &review.Result{Message: "done"}
 	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true})
 	if err != nil {
@@ -563,8 +607,9 @@ func TestPublishTrackingDisabledStripsLegacyLedgerAndMatchesClassicBody(t *testi
 	}
 	withPrior := newFake()
 	withPrior.issueComments = []poster.IssueCommentInfo{{
-		ID:   31,
-		Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(legacyPrior),
+		ID:     31,
+		Author: "ci-bot",
+		Body:   format.SummaryMarker + "\nold body\n" + format.EncodeLedger(legacyPrior),
 	}}
 	r := result(c("a.go", 3, 3, "low"))
 	if _, err := Publish(r, withPrior, Options{RunTag: "t", CommitID: "s", Sticky: true}); err != nil {
@@ -610,7 +655,7 @@ func TestPublishTracksPostedFindingsThenResolves(t *testing.T) {
 
 	// Run 2: same PR, the finding is fixed (zero results) -> resolved.
 	f2 := newFake()
-	f2.issueComments = []poster.IssueCommentInfo{{ID: 71, Body: summary1}}
+	f2.issueComments = []poster.IssueCommentInfo{{ID: 71, Author: "ci-bot", Body: summary1}}
 	stats2, err := Publish(result(), f2, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true})
 	if err != nil {
 		t.Fatal(err)
@@ -633,7 +678,7 @@ func TestPublishTracksPostedFindingsThenResolves(t *testing.T) {
 	// Run 3: a new finding posts; earlier resolutions stay in the ledger
 	// state but must not re-render into the visible resolved section.
 	f3 := newFake()
-	f3.issueComments = []poster.IssueCommentInfo{{ID: 72, Body: summary2}}
+	f3.issueComments = []poster.IssueCommentInfo{{ID: 72, Author: "ci-bot", Body: summary2}}
 	stats3, err := Publish(result(c("b.go", 5, 6, "high")), f3, Options{RunTag: "run-3", CommitID: "s", Sticky: true, ResolutionTracking: true})
 	if err != nil {
 		t.Fatal(err)
@@ -684,7 +729,7 @@ func TestPublishRoutedFindingKeepsPriorLedgerEntryOpen(t *testing.T) {
 	// summary. It must keep the prior entry open (never resolve what OCR
 	// still reports); routed comments never create entries.
 	f2 := newFake()
-	f2.issueComments = []poster.IssueCommentInfo{{ID: 71, Body: summary1}}
+	f2.issueComments = []poster.IssueCommentInfo{{ID: 71, Author: "ci-bot", Body: summary1}}
 	stats2, err := Publish(result(c("a.go", 1, 1, "low")), f2, Options{
 		RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true,
 		Route: policy.Build("low", ""),
@@ -711,7 +756,7 @@ func TestPublishPrecheckDropsAndSubmitFailuresKeepPriorEntriesOpen(t *testing.T)
 			Open:    []format.LedgerEntry{{Path: "b.go", StartLine: 1, EndLine: 1, FirstSeen: "run-1"}},
 		}
 		f := newFake()
-		f.issueComments = []poster.IssueCommentInfo{{ID: 71, Body: format.SummaryMarker + "\nold\n" + format.EncodeLedger(prior)}}
+		f.issueComments = []poster.IssueCommentInfo{{ID: 71, Author: "ci-bot", Body: format.SummaryMarker + "\nold\n" + format.EncodeLedger(prior)}}
 		// The finding sits in b.go, which no longer exists in the diff
 		// (only a.go changed): the pre-check drops it as out of diff.
 		f.diff = []byte("diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,2 @@\n keep()\n-removed()\n+added()\n")
@@ -736,7 +781,7 @@ func TestPublishPrecheckDropsAndSubmitFailuresKeepPriorEntriesOpen(t *testing.T)
 			Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 1, EndLine: 1, FirstSeen: "run-1"}},
 		}
 		f := newFake()
-		f.issueComments = []poster.IssueCommentInfo{{ID: 71, Body: format.SummaryMarker + "\nold\n" + format.EncodeLedger(prior)}}
+		f.issueComments = []poster.IssueCommentInfo{{ID: 71, Author: "ci-bot", Body: format.SummaryMarker + "\nold\n" + format.EncodeLedger(prior)}}
 		f.createErr = errors.New("review boom")
 		stats, err := Publish(result(c("a.go", 1, 1, "low")), f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true})
 		if err != nil {
@@ -867,7 +912,7 @@ func TestPublishRunRendersOpenAndResolvedSectionsInOneSummary(t *testing.T) {
 
 	// Run 2: a.go is fixed, a new finding arrives on b.go.
 	f2 := newFake()
-	f2.issueComments = []poster.IssueCommentInfo{{ID: 71, Body: summary1}}
+	f2.issueComments = []poster.IssueCommentInfo{{ID: 71, Author: "ci-bot", Body: summary1}}
 	stats2, err := Publish(result(c("b.go", 5, 6, "high")), f2, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true})
 	if err != nil {
 		t.Fatal(err)

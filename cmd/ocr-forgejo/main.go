@@ -279,19 +279,29 @@ func run(cfg *Config) int {
 	return 0
 }
 
-// lastReviewedMarkerRe extracts the SHA from a last-reviewed marker.
-var lastReviewedMarkerRe = regexp.MustCompile(`<!-- ocr-last-reviewed:(\S+) -->`)
+// lastReviewedMarkerRe extracts the SHA from a last-reviewed marker. It is
+// derived from format.LastReviewedMarkerFmt so the write-side format and the
+// read-side pattern cannot drift apart.
+var lastReviewedMarkerRe = regexp.MustCompile(
+	strings.Replace(regexp.QuoteMeta(format.LastReviewedMarkerFmt), "%s", `(\S+)`, 1))
 
 // findLastReviewedSHA locates the sticky summary comment (newest match
 // first) and extracts the SHA from its last-reviewed marker. An absent
 // summary or marker yields an empty string.
 func findLastReviewedSHA(p poster.Poster) (string, error) {
+	// Only trust the bot's own summary comments: without the author check
+	// any commenter could plant a forged last-reviewed marker and steer the
+	// next run's delta range (and, with resolution tracking, approvals).
+	me, err := p.WhoAmI()
+	if err != nil {
+		return "", err
+	}
 	comments, err := p.ListIssueComments()
 	if err != nil {
 		return "", err
 	}
 	for i := len(comments) - 1; i >= 0; i-- {
-		if !strings.Contains(comments[i].Body, format.SummaryMarker) {
+		if comments[i].Author != me || !strings.Contains(comments[i].Body, format.SummaryMarker) {
 			continue
 		}
 		matches := lastReviewedMarkerRe.FindAllStringSubmatch(comments[i].Body, -1)
