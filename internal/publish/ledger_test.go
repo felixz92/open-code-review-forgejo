@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/felixz92/open-code-review-forgejo/internal/diffinv"
 	"github.com/felixz92/open-code-review-forgejo/internal/format"
 	"github.com/felixz92/open-code-review-forgejo/internal/incremental"
 	"github.com/felixz92/open-code-review-forgejo/internal/policy"
@@ -24,7 +25,7 @@ func TestMergeLedgerPersistsMatchedFinding(t *testing.T) {
 	}
 	var posted []inlineItem
 	posted = append(posted, mergeItem("a.go", 10, 10))
-	next, resolved := mergeLedger(prior, posted, posted, "run-2", "2026-10-14", 0.6)
+	next, resolved := mergeLedger(prior, nil, posted, posted, "run-2", "2026-10-14", 0.6)
 	if len(resolved) != 0 {
 		t.Fatalf("matched entry must stay open, resolved=%d", len(resolved))
 	}
@@ -50,7 +51,7 @@ func TestMergeLedgerResolvesUnmatchedAndAddsNew(t *testing.T) {
 	}
 	var posted []inlineItem
 	posted = append(posted, mergeItem("b.go", 5, 5))
-	next, resolved := mergeLedger(prior, posted, posted, "run-2", "2026-10-14", 0.6)
+	next, resolved := mergeLedger(prior, nil, posted, posted, "run-2", "2026-10-14", 0.6)
 	if len(resolved) != 1 {
 		t.Fatalf("expected 1 resolution, got %d", len(resolved))
 	}
@@ -76,7 +77,7 @@ func TestMergeLedgerLineShiftKeepsSameEntry(t *testing.T) {
 	}
 	var posted []inlineItem
 	posted = append(posted, mergeItem("a.go", 52, 61))
-	next, resolved := mergeLedger(prior, posted, posted, "run-2", "2026-10-14", 0.6)
+	next, resolved := mergeLedger(prior, nil, posted, posted, "run-2", "2026-10-14", 0.6)
 	if len(resolved) != 0 {
 		t.Fatalf("shifted span within IoU threshold must stay open, resolved=%d", len(resolved))
 	}
@@ -99,7 +100,7 @@ func TestMergeLedgerIsPathScoped(t *testing.T) {
 	}
 	var posted []inlineItem
 	posted = append(posted, mergeItem("b.go", 10, 10))
-	next, resolved := mergeLedger(prior, posted, posted, "run-2", "2026-10-14", 0.6)
+	next, resolved := mergeLedger(prior, nil, posted, posted, "run-2", "2026-10-14", 0.6)
 	if len(resolved) != 1 || len(next.Open) != 1 || next.Open[0].Path != "b.go" {
 		t.Fatalf("same span on another path must not match: resolved=%d open=%+v", len(resolved), next.Open)
 	}
@@ -112,7 +113,7 @@ func TestMergeLedgerSkippedFindsKeepEntryOpenWithoutAdding(t *testing.T) {
 	}
 	var skipped []inlineItem
 	skipped = append(skipped, mergeItem("a.go", 10, 10))
-	next, resolved := mergeLedger(prior, skipped, nil, "run-2", "2026-10-14", 0.6)
+	next, resolved := mergeLedger(prior, nil, skipped, nil, "run-2", "2026-10-14", 0.6)
 	if len(resolved) != 0 {
 		t.Fatalf("incrementally skipped finding must keep entry open, resolved=%d", len(resolved))
 	}
@@ -131,7 +132,7 @@ func TestMergeLedgerPrunesResolvedBeyondCap(t *testing.T) {
 		Open:     []format.LedgerEntry{{Path: "a.go", StartLine: 10, EndLine: 10, FirstSeen: "run-1"}},
 		Resolved: stamped,
 	}
-	next, thisRun := mergeLedger(prior, nil, nil, "run-2", "2026-10-14", 0.6)
+	next, thisRun := mergeLedger(prior, nil, nil, nil, "run-2", "2026-10-14", 0.6)
 	if len(thisRun) != 1 || thisRun[0].Path != "a.go" {
 		t.Fatalf("expected the open entry to resolve this run, got %+v", thisRun)
 	}
@@ -155,7 +156,7 @@ func TestMergeLedgerPrunesResolvedBeyondCap(t *testing.T) {
 func TestMergeLedgerNilPriorSeedsFresh(t *testing.T) {
 	var posted []inlineItem
 	posted = append(posted, mergeItem("a.go", 1, 3))
-	next, resolved := mergeLedger(nil, posted, posted, "run-1", "2026-10-14", 0.6)
+	next, resolved := mergeLedger(nil, nil, posted, posted, "run-1", "2026-10-14", 0.6)
 	if len(resolved) != 0 {
 		t.Fatalf("fresh ledger must not resolve anything, got %d", len(resolved))
 	}
@@ -174,9 +175,114 @@ func TestMergeLedgerKeepsStableOpenOrder(t *testing.T) {
 	}
 	var posted []inlineItem
 	posted = append(posted, mergeItem("a.go", 1, 1), mergeItem("a.go", 10, 20))
-	next, _ := mergeLedger(prior, posted, posted, "run-2", "2026-10-14", 0.6)
+	next, _ := mergeLedger(prior, nil, posted, posted, "run-2", "2026-10-14", 0.6)
 	if len(next.Open) != 2 || next.Open[0].StartLine != 1 || next.Open[1].StartLine != 10 {
 		t.Fatalf("open entries must keep stable order with new ones appended, got %+v", next.Open)
+	}
+}
+
+const covDiff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,3 +1,4 @@\n keep()\n-removed()\n+added()\n+added2()\n still()\n"
+
+func coverageFrom(t *testing.T, diff string) *Coverage {
+	t.Helper()
+	inv, err := diffinv.New([]byte(diff))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewCoverage(inv)
+}
+
+func TestMergeLedgerCoverageInDiffResolves(t *testing.T) {
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 2, EndLine: 3, FirstSeen: "run-1"}},
+	}
+	next, resolved := mergeLedger(prior, coverageFrom(t, covDiff), nil, nil, "run-2", "2026-10-14", 0.6)
+	if len(resolved) != 1 || resolved[0].Path != "a.go" {
+		t.Fatalf("in-diff entry must resolve, got %v", resolved)
+	}
+	if len(next.Open) != 0 {
+		t.Fatalf("no open entries may remain, got %+v", next.Open)
+	}
+}
+
+func TestMergeLedgerCoverageOutOfDiffStaysOpen(t *testing.T) {
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open: []format.LedgerEntry{
+			{Path: "z.go", StartLine: 10, EndLine: 10, FirstSeen: "run-1"}, // not in the diff
+			{Path: "a.go", StartLine: 50, EndLine: 50, FirstSeen: "run-1"}, // in file, outside hunks
+		},
+	}
+	next, resolved := mergeLedger(prior, coverageFrom(t, covDiff), nil, nil, "run-2", "2026-10-14", 0.6)
+	if len(resolved) != 0 {
+		t.Fatalf("out-of-diff entries must not resolve, got %v", resolved)
+	}
+	if len(next.Open) != 2 {
+		t.Fatalf("out-of-diff entries must stay open, got %+v", next.Open)
+	}
+}
+
+func TestMergeLedgerCoverageIncompleteDiffStaysOpen(t *testing.T) {
+	// Hunk claims 5 new lines but carries one: the inventory is marked
+	// incomplete, every classify comes back Unknown, nothing resolves.
+	truncated := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,5 +1,5 @@\n keep()\n"
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 1, EndLine: 1, FirstSeen: "run-1"}},
+	}
+	next, resolved := mergeLedger(prior, coverageFrom(t, truncated), nil, nil, "run-2", "2026-10-14", 0.6)
+	if len(resolved) != 0 || len(next.Open) != 1 {
+		t.Fatalf("unknown classification must stay open, resolved=%v open=%+v", resolved, next.Open)
+	}
+}
+
+func TestMergeLedgerCoverageReReportedStaysOpenWithSpanRefresh(t *testing.T) {
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 2, EndLine: 2, FirstSeen: "run-1", Content: "old text"}},
+	}
+	reported := mergeItem("a.go", 2, 2)
+	next, resolved := mergeLedger(prior, coverageFrom(t, covDiff), []inlineItem{reported}, []inlineItem{reported}, "run-2", "2026-10-14", 0.6)
+	if len(resolved) != 0 {
+		t.Fatalf("re-reported entry must stay open, got %v", resolved)
+	}
+	if len(next.Open) != 1 || next.Open[0].StartLine != 2 || next.Open[0].EndLine != 2 {
+		t.Fatalf("re-reported entry must stay open with its span, got %+v", next.Open)
+	}
+	if next.Open[0].Content != "content a.go" {
+		t.Fatalf("re-reported entry content must refresh, got %q", next.Open[0].Content)
+	}
+}
+
+func TestMergeLedgerNoCoverageFlagResolvesAsBefore(t *testing.T) {
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 10, EndLine: 10, FirstSeen: "run-1"}},
+	}
+	next, resolved := mergeLedger(prior, nil, nil, nil, "run-2", "2026-10-14", 0.6)
+	if len(resolved) != 1 {
+		t.Fatalf("absent coverage must keep full-range semantics, got %d resolutions", len(resolved))
+	}
+	if len(next.Open) != 0 || len(next.Resolved) != 1 {
+		t.Fatalf("ledger = %+v", next)
+	}
+}
+
+func TestMergeLedgerNoCoverageResolvesNothing(t *testing.T) {
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 2, EndLine: 3, FirstSeen: "run-1"}},
+	}
+	next, resolved := mergeLedger(prior, NoCoverage(), nil, nil, "run-2", "2026-10-14", 0.6)
+	if len(resolved) != 0 {
+		t.Fatalf("no-coverage must resolve nothing, got %v", resolved)
+	}
+	if len(next.Open) != 1 || next.Open[0].Path != "a.go" {
+		t.Fatalf("entry must stay open, got %+v", next.Open)
+	}
+	if len(next.Resolved) != 0 {
+		t.Fatalf("no resolved entries may appear, got %+v", next.Resolved)
 	}
 }
 
@@ -255,6 +361,161 @@ func TestPublishCleanRunResolvesAllOpenLedger(t *testing.T) {
 	}
 	if len(l.Open) != 0 || len(l.Resolved) != 1 || l.Resolved[0].Path != "a.go" {
 		t.Fatalf("ledger must move the entry to resolved, got %+v", l)
+	}
+}
+
+func TestPublishCleanDeltaRunKeepsUncoveredEntriesOpen(t *testing.T) {
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "z.go", StartLine: 5, EndLine: 5, FirstSeen: "run-1", Content: "still broken"}},
+	}
+	f := newFake()
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	r := &review.Result{Message: "nothing to comment on"}
+	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true, Coverage: coverageFrom(t, covDiff)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Resolved != 0 {
+		t.Fatalf("uncovered entry must not resolve, got %d resolutions", stats.Resolved)
+	}
+	body, ok := f.editedSummary[31]
+	if !ok {
+		t.Fatalf("summary must update in place, summaries=%v", f.createdSummary)
+	}
+	if strings.Contains(body, "Resolved **") {
+		t.Fatalf("no resolution may be claimed, got %q", body)
+	}
+	if !strings.Contains(body, "Findings still open: 1") || !strings.Contains(body, "`z.go` (L5)") {
+		t.Fatalf("surviving entry must render in an open section, got %q", body)
+	}
+	_, l, found, err := format.StripLedger(body)
+	if err != nil || !found {
+		t.Fatalf("summary must carry the ledger block: found=%v err=%v", found, err)
+	}
+	if len(l.Open) != 1 || l.Open[0].Path != "z.go" || len(l.Resolved) != 0 {
+		t.Fatalf("uncovered entry must stay open in the ledger, got %+v", l)
+	}
+}
+
+func TestPublishCleanDeltaRunDowngradesToComment(t *testing.T) {
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "z.go", StartLine: 5, EndLine: 5, FirstSeen: "run-1", Content: "still broken"}},
+	}
+	f := newFake()
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	r := &review.Result{Message: "nothing to comment on"}
+	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true, Coverage: coverageFrom(t, covDiff)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.State != StateComment {
+		t.Fatalf("clean delta run with open survivors must downgrade, got %q", stats.State)
+	}
+	if len(f.submitStates) != 1 || f.submitStates[0] != StateComment {
+		t.Fatalf("submit states = %v, want [COMMENT]", f.submitStates)
+	}
+}
+
+func TestPublishCleanRunZeroSurvivorsApproves(t *testing.T) {
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 2, EndLine: 3, FirstSeen: "run-1", Content: "fixed now"}},
+	}
+	f := newFake()
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	r := &review.Result{Message: "nothing to comment on"}
+	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true, Coverage: coverageFrom(t, covDiff)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.State != StateApproved {
+		t.Fatalf("zero survivors must approve normally, got %q", stats.State)
+	}
+	if len(f.submitStates) != 1 || f.submitStates[0] != StateApproved {
+		t.Fatalf("submit states = %v, want [APPROVED]", f.submitStates)
+	}
+}
+
+func TestPublishLowFindingsWithSurvivorsDowngradeToComment(t *testing.T) {
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "z.go", StartLine: 5, EndLine: 5, FirstSeen: "run-1", Content: "still broken"}},
+	}
+	f := newFake()
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	r := result(c("a.go", 1, 2, "low"))
+	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true, Coverage: coverageFrom(t, covDiff)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.State != StateComment {
+		t.Fatalf("low-only findings with open survivors must downgrade, got %q", stats.State)
+	}
+	if len(f.submitStates) != 1 || f.submitStates[0] != StateComment {
+		t.Fatalf("submit states = %v, want [COMMENT]", f.submitStates)
+	}
+}
+
+func TestPublishDowngradedRunNotesRemainingOpen(t *testing.T) {
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "z.go", StartLine: 5, EndLine: 5, FirstSeen: "run-1", Content: "still broken"}},
+	}
+	f := newFake()
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	r := &review.Result{Message: "nothing to comment on"}
+	if _, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true, Coverage: coverageFrom(t, covDiff)}); err != nil {
+		t.Fatal(err)
+	}
+	body := f.editedSummary[31]
+	if !strings.Contains(body, "Delta clean, 1 finding(s) remain open") {
+		t.Fatalf("downgraded summary must note the remaining open count, got %q", body)
+	}
+}
+
+func TestPublishNoteAbsentWithoutDowngrade(t *testing.T) {
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "a.go", StartLine: 2, EndLine: 3, FirstSeen: "run-1", Content: "fixed now"}},
+	}
+	f := newFake()
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	r := &review.Result{Message: "nothing to comment on"}
+	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true, Coverage: coverageFrom(t, covDiff)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.State != StateApproved {
+		t.Fatalf("zero survivors must approve, got %q", stats.State)
+	}
+	if body := f.editedSummary[31]; strings.Contains(body, "remain open") {
+		t.Fatalf("approval summary must not carry the downgrade note, got %q", body)
+	}
+}
+
+func TestPublishDowngradeNoteWithoutInlineReview(t *testing.T) {
+	// All findings below threshold and without line info: nothing posts
+	// inline, so the downgrade only settles after the summary was built.
+	// The note must not depend on that ordering.
+	prior := &format.Ledger{
+		Version: format.LedgerVersion,
+		Open:    []format.LedgerEntry{{Path: "z.go", StartLine: 5, EndLine: 5, FirstSeen: "run-1", Content: "still broken"}},
+	}
+	f := newFake()
+	f.issueComments = []poster.IssueCommentInfo{{ID: 31, Body: format.SummaryMarker + "\nold body\n" + format.EncodeLedger(prior)}}
+	r := result(c("a.go", 0, 0, "low"))
+	stats, err := Publish(r, f, Options{RunTag: "run-2", CommitID: "s", Sticky: true, ResolutionTracking: true, Coverage: coverageFrom(t, covDiff)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.State != StateComment {
+		t.Fatalf("downgraded run must record COMMENT, got %q", stats.State)
+	}
+	body := finalSummaryBody(f)
+	if !strings.Contains(body, "Delta clean, 1 finding(s) remain open") {
+		t.Fatalf("summary must note the remaining open count even without an inline review, got %q", body)
 	}
 }
 
@@ -497,7 +758,7 @@ func TestPublishPrecheckDropsAndSubmitFailuresKeepPriorEntriesOpen(t *testing.T)
 func TestMergeLedgerSnippetsSanitizeHtmlCommentTerminators(t *testing.T) {
 	c := review.Comment{Path: "a.go", StartLine: 1, EndLine: 1, Content: "bug in <!-- /ocr-ledger --> chain"}
 	cands := []inlineItem{{comment: &c, span: incremental.NewSpan(1, 1)}}
-	next, _ := mergeLedger(nil, cands, cands, "run-1", "2026-10-14", 0.6)
+	next, _ := mergeLedger(nil, nil, cands, cands, "run-1", "2026-10-14", 0.6)
 	if len(next.Open) != 1 {
 		t.Fatalf("finding must enter the ledger, got %+v", next.Open)
 	}
@@ -519,7 +780,7 @@ func TestMergeLedgerSnippetsSanitizeLedgerStartMarker(t *testing.T) {
 	raw := "quotes LedgerStartMarker = \"<!-- ocr-ledger \" verbatim"
 	c := review.Comment{Path: "a.go", StartLine: 1, EndLine: 1, Content: raw}
 	cands := []inlineItem{{comment: &c, span: incremental.NewSpan(1, 1)}}
-	next, _ := mergeLedger(nil, cands, cands, "run-1", "2026-10-14", 0.6)
+	next, _ := mergeLedger(nil, nil, cands, cands, "run-1", "2026-10-14", 0.6)
 	if len(next.Open) != 1 {
 		t.Fatalf("finding must enter the ledger, got %+v", next.Open)
 	}

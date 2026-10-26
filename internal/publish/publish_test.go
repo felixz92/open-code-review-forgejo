@@ -537,25 +537,29 @@ func TestDecideState(t *testing.T) {
 		comments     []review.Comment
 		approveBelow string
 		posted       bool
+		survivors    int
 		want         string
 	}{
-		{"clean result approves", nil, "low", false, StateApproved},
-		{"zero findings approve with posting success", nil, "low", true, StateApproved},
-		{"low-only result approves", []review.Comment{c("a.go", 1, 1, "low"), c("b.go", 1, 2, "low")}, "low", true, StateApproved},
-		{"empty threshold fails safe: low blocks", []review.Comment{c("a.go", 1, 1, "low")}, "", true, StateRequestChanges},
-		{"finding requests changes", []review.Comment{c("a.go", 1, 1, "medium")}, "low", true, StateRequestChanges},
-		{"finding at threshold does not block", []review.Comment{c("a.go", 1, 1, "medium")}, "medium", true, StateApproved},
-		{"posted=false with findings comments", []review.Comment{c("a.go", 1, 1, "high")}, "low", false, StateComment},
-		{"routed findings still count", []review.Comment{c("a.go", 1, 1, "medium")}, "low", true, StateRequestChanges},
-		{"skipped findings still count", []review.Comment{c("a.go", 1, 1, "high")}, "low", true, StateRequestChanges},
-		{"malformed threshold fails safe to comment", []review.Comment{c("a.go", 1, 1, "low")}, "banana", true, StateRequestChanges},
-		{"malformed threshold with findings blocks", []review.Comment{c("a.go", 1, 1, "low")}, "banana", false, StateComment},
-		{"unranked severity fails safe: empty blocks", []review.Comment{c("a.go", 1, 1, "")}, "low", true, StateRequestChanges},
-		{"unranked severity fails safe: unknown blocks", []review.Comment{c("a.go", 1, 1, "banana")}, "low", false, StateComment},
+		{"clean result approves", nil, "low", false, 0, StateApproved},
+		{"zero findings approve with posting success", nil, "low", true, 0, StateApproved},
+		{"low-only result approves", []review.Comment{c("a.go", 1, 1, "low"), c("b.go", 1, 2, "low")}, "low", true, 0, StateApproved},
+		{"empty threshold fails safe: low blocks", []review.Comment{c("a.go", 1, 1, "low")}, "", true, 0, StateRequestChanges},
+		{"finding requests changes", []review.Comment{c("a.go", 1, 1, "medium")}, "low", true, 0, StateRequestChanges},
+		{"finding at threshold does not block", []review.Comment{c("a.go", 1, 1, "medium")}, "medium", true, 0, StateApproved},
+		{"posted=false with findings comments", []review.Comment{c("a.go", 1, 1, "high")}, "low", false, 0, StateComment},
+		{"routed findings still count", []review.Comment{c("a.go", 1, 1, "medium")}, "low", true, 0, StateRequestChanges},
+		{"skipped findings still count", []review.Comment{c("a.go", 1, 1, "high")}, "low", true, 0, StateRequestChanges},
+		{"malformed threshold fails safe to comment", []review.Comment{c("a.go", 1, 1, "low")}, "banana", true, 0, StateRequestChanges},
+		{"malformed threshold with findings blocks", []review.Comment{c("a.go", 1, 1, "low")}, "banana", false, 0, StateComment},
+		{"unranked severity fails safe: empty blocks", []review.Comment{c("a.go", 1, 1, "")}, "low", true, 0, StateRequestChanges},
+		{"unranked severity fails safe: unknown blocks", []review.Comment{c("a.go", 1, 1, "banana")}, "low", false, 0, StateComment},
+		{"open survivors downgrade approval", nil, "low", true, 2, StateComment},
+		{"open survivors downgrade low-only approval", []review.Comment{c("a.go", 1, 1, "low")}, "low", true, 1, StateComment},
+		{"zero survivors approve normally", nil, "low", true, 0, StateApproved},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := decideState(result(tc.comments...), tc.approveBelow, tc.posted)
+			got := decideState(result(tc.comments...), tc.approveBelow, tc.posted, tc.survivors)
 			if got != tc.want {
 				t.Fatalf("decideState = %q, want %q", got, tc.want)
 			}
@@ -567,10 +571,10 @@ func TestDecideStateFailsSafeOnMalformedThreshold(t *testing.T) {
 	// Malformed --approve-below must not approve anything but a comment-free
 	// result: any known-severity comment blocks, even `low`.
 	r := result(c("a.go", 1, 1, "low"))
-	if got := decideState(r, "banana", true); got != StateRequestChanges {
+	if got := decideState(r, "banana", true, 0); got != StateRequestChanges {
 		t.Fatalf("malformed threshold must not approve findings, got %q", got)
 	}
-	empty := decideState(result(), "banana", true)
+	empty := decideState(result(), "banana", true, 0)
 	if empty != StateApproved {
 		t.Fatalf("comment-free result must still approve, got %q", empty)
 	}
@@ -949,5 +953,97 @@ func TestPublishFailedRunDryRunPrintsNoteWithoutWrites(t *testing.T) {
 	}
 	if stats.RunStatus != "failed" || stats.State != StateComment {
 		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestPublishNoIssuesSummaryEmbedsLastReviewedMarker(t *testing.T) {
+	f := newFake()
+	f.headSHA = "head123"
+	r := result()
+	r.Manifest = review.Manifest{Input: review.ManifestInput{ResolvedHead: "abc123"}}
+	if _, err := Publish(r, f, Options{RunTag: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.createdSummary[0], "<!-- ocr-last-reviewed:abc123 -->") {
+		t.Fatalf("no-issues summary must embed the last-reviewed marker, got %q", f.createdSummary[0])
+	}
+}
+
+func TestPublishTrackedNoIssuesSummaryEmbedsLastReviewedMarker(t *testing.T) {
+	f := newFake()
+	f.headSHA = "head123"
+	r := result()
+	r.Manifest = review.Manifest{Input: review.ManifestInput{ResolvedHead: "abc123"}}
+	if _, err := Publish(r, f, Options{RunTag: "t", ResolutionTracking: true}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.createdSummary[0], "<!-- ocr-last-reviewed:abc123 -->") {
+		t.Fatalf("tracked no-issues summary must embed the last-reviewed marker, got %q", f.createdSummary[0])
+	}
+}
+
+func TestPublishFailedRunSummaryHasNoLastReviewedMarker(t *testing.T) {
+	f := newFake()
+	f.reviews = []poster.ReviewInfo{{ID: 7, State: "PENDING", Reviewer: "ci-bot"}}
+	r := &review.Result{Status: "failed", Message: "run crashed"}
+	r.Manifest = review.Manifest{Input: review.ManifestInput{ResolvedHead: "abc123"}}
+	if _, err := Publish(r, f, Options{RunTag: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(f.createdSummary[0], "<!-- ocr-last-reviewed:") {
+		t.Fatalf("failed-run summary must not embed the last-reviewed marker, got %q", f.createdSummary[0])
+	}
+}
+
+func TestPublishSummaryOmitsMarkerWithoutResolvedHead(t *testing.T) {
+	f := newFake()
+	f.headSHA = "head123"
+	if _, err := Publish(result(), f, Options{RunTag: "t"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(f.createdSummary[0], "<!-- ocr-last-reviewed:") {
+		t.Fatalf("summary without a resolved head must not embed the marker, got %q", f.createdSummary[0])
+	}
+}
+
+func TestPublishApprovalWithFindingsEmbedsLastReviewedMarker(t *testing.T) {
+	f := newFake()
+	r := result(c("a.go", 1, 2, "low"))
+	r.Manifest = review.Manifest{Input: review.ManifestInput{ResolvedHead: "abc123"}}
+	stats, err := Publish(r, f, Options{RunTag: "t", CommitID: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.State != StateApproved {
+		t.Fatalf("stats.State = %q, want APPROVED", stats.State)
+	}
+	if body := finalSummaryBody(f); !strings.Contains(body, "<!-- ocr-last-reviewed:abc123 -->") {
+		t.Fatalf("approval summary must embed the last-reviewed marker, got %q", body)
+	}
+}
+
+func TestPublishMarkerSurvivesLedgerReencode(t *testing.T) {
+	f := newFake()
+	f.headSHA = "head123"
+	r1 := result(c("a.go", 1, 2, "low"))
+	r1.Manifest = review.Manifest{Input: review.ManifestInput{ResolvedHead: "aaa111"}}
+	if _, err := Publish(r1, f, Options{RunTag: "run1", CommitID: "s", ResolutionTracking: true, Sticky: true}); err != nil {
+		t.Fatal(err)
+	}
+	// Second run: clean, re-encodes the ledger into the sticky summary.
+	// The sticky lookup must find run 1's final summary body.
+	f.issueComments = []poster.IssueCommentInfo{{ID: 55, Body: f.editedSummary[55]}}
+	f.createdSummary = nil
+	r2 := result()
+	r2.Manifest = review.Manifest{Input: review.ManifestInput{ResolvedHead: "bbb222"}}
+	if _, err := Publish(r2, f, Options{RunTag: "run2", ResolutionTracking: true, Sticky: true}); err != nil {
+		t.Fatal(err)
+	}
+	body := f.editedSummary[55]
+	if !strings.Contains(body, "<!-- ocr-last-reviewed:bbb222 -->") {
+		t.Fatalf("re-encoded summary must carry the marker for the new head, got %q", body)
+	}
+	if strings.Contains(body, "<!-- ocr-last-reviewed:aaa111 -->") {
+		t.Fatalf("stale marker for the previous head must be gone, got %q", body)
 	}
 }

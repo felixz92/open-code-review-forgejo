@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 
+	"github.com/felixz92/open-code-review-forgejo/internal/diffinv"
+	"github.com/felixz92/open-code-review-forgejo/internal/format"
 	"github.com/felixz92/open-code-review-forgejo/internal/policy"
 	"github.com/felixz92/open-code-review-forgejo/internal/poster"
 	"github.com/felixz92/open-code-review-forgejo/internal/publish"
@@ -34,6 +37,8 @@ type Config struct {
 	RunTag                   string
 	Suggestions              bool
 	ResolutionTracking       bool
+	PrintLastReviewed        bool
+	CoverageDiffPath         string
 }
 
 const (
@@ -63,6 +68,8 @@ func ParseFlags(args []string) (*Config, error) {
 	fs.StringVar(&cfg.RunTag, "run-tag", "", "per-run identity for idempotency tags (default: <pr>-<head sha>)")
 	fs.BoolVar(&cfg.Suggestions, "suggestions", true, "include Before/After suggestion blocks in comment bodies")
 	fs.BoolVar(&cfg.ResolutionTracking, "resolution-tracking", false, "maintain an open/resolved findings ledger in the sticky summary across runs")
+	fs.BoolVar(&cfg.PrintLastReviewed, "print-last-reviewed", false, "print the last-reviewed head SHA from the sticky summary and exit; failures print nothing and exit 0")
+	fs.StringVar(&cfg.CoverageDiffPath, "coverage-diff", "", "unified diff of the exact range this run reviewed; open ledger entries resolve only when covered (requires --resolution-tracking)")
 
 	if err := fs.Parse(reorderArgs(args, boolFlags(fs))); err != nil {
 		return nil, err
@@ -141,6 +148,9 @@ func (c *Config) validate(fs *flag.FlagSet) error {
 	if c.ResolutionTracking && !c.StickySummary {
 		return fmt.Errorf("--resolution-tracking requires the sticky summary: cross-run ledger state lives in the sticky summary body")
 	}
+	if c.CoverageDiffPath != "" && !c.ResolutionTracking {
+		return fmt.Errorf("--coverage-diff requires --resolution-tracking: coverage-aware approval safety depends on the ledger")
+	}
 	if (c.Incremental || c.ResolutionTracking) && (c.IncrementalOverlapThresh <= 0 || c.IncrementalOverlapThresh >= 1) {
 		return fmt.Errorf("--incremental-overlap-threshold must be in (0, 1), got %v", c.IncrementalOverlapThresh)
 	}
@@ -203,6 +213,15 @@ func run(cfg *Config) int {
 		p = fp
 	}
 
+	// Query mode: read-only, exits before any result loading or posting.
+	if cfg.PrintLastReviewed {
+		code := runPrintLastReviewed(p)
+		// Every exit path writes the stats file (main spec); the query
+		// mode posts nothing, so the stats stay zeroed.
+		_ = publish.WriteStatsFile(cfg.StatsFilePath, &publish.Stats{})
+		return code
+	}
+
 	result, err := review.Load(cfg.InputPath, review.WithStderrLog(cfg.StderrLogPath))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -235,6 +254,7 @@ func run(cfg *Config) int {
 		Suggestions:        cfg.Suggestions,
 		ApproveBelow:       cfg.ApproveBelow,
 		ResolutionTracking: cfg.ResolutionTracking,
+		Coverage:           loadCoverageDiff(cfg.CoverageDiffPath),
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -257,6 +277,66 @@ func run(cfg *Config) int {
 	log.Printf("posted %d/%d inline, %d summary, %d routed, %d skipped, %d failed, %d resolved (total %d): %s",
 		stats.Inline, stats.Total, stats.Summary, stats.Routed, stats.Skipped, stats.Failed, stats.Resolved, stats.Total, stats.State)
 	return 0
+}
+
+// lastReviewedMarkerRe extracts the SHA from a last-reviewed marker.
+var lastReviewedMarkerRe = regexp.MustCompile(`<!-- ocr-last-reviewed:(\S+) -->`)
+
+// findLastReviewedSHA locates the sticky summary comment (newest match
+// first) and extracts the SHA from its last-reviewed marker. An absent
+// summary or marker yields an empty string.
+func findLastReviewedSHA(p poster.Poster) (string, error) {
+	comments, err := p.ListIssueComments()
+	if err != nil {
+		return "", err
+	}
+	for i := len(comments) - 1; i >= 0; i-- {
+		if !strings.Contains(comments[i].Body, format.SummaryMarker) {
+			continue
+		}
+		matches := lastReviewedMarkerRe.FindAllStringSubmatch(comments[i].Body, -1)
+		if len(matches) == 0 {
+			return "", nil
+		}
+		return matches[len(matches)-1][1], nil
+	}
+	return "", nil
+}
+
+// runPrintLastReviewed implements the query mode: print the last-reviewed
+// head SHA to stdout and exit 0. Any failure prints nothing and exits 0 so
+// callers can fall back to a full review (advisory-step contract).
+func runPrintLastReviewed(p poster.Poster) int {
+	sha, err := findLastReviewedSHA(p)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not read the last-reviewed marker:", err)
+		return 0
+	}
+	if sha != "" {
+		fmt.Println(sha)
+	}
+	return 0
+}
+
+// loadCoverageDiff turns the --coverage-diff file into a publish.Coverage.
+// An empty path keeps full-range resolution semantics (nil). An unreadable
+// or unparseable file means "no coverage": nothing resolves this run,
+// with a logged warning — never a silent full-coverage fallback.
+func loadCoverageDiff(path string) *publish.Coverage {
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: could not read coverage diff:", err)
+		return publish.NoCoverage()
+	}
+	inv, err := diffinv.New(data)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "warning: coverage diff is not a parseable unified diff:", err)
+		return publish.NoCoverage()
+	}
+	return publish.NewCoverage(inv)
 }
 
 func shortSHA(sha string) string {

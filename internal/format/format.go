@@ -16,6 +16,20 @@ const SummaryMarker = "<!-- ocr-summary -->"
 // non-sticky mode can find this run's comment.
 const PerRunMarkerFmt = "<!-- ocr-summary-run:%s -->"
 
+// LastReviewedMarkerFmt embeds the reviewed head SHA in sticky summary
+// success bodies; callers extract it with the query mode to compute a
+// delta range for the next run.
+const LastReviewedMarkerFmt = "<!-- ocr-last-reviewed:%s -->"
+
+// FormatLastReviewedMarker renders the marker for a resolved head SHA.
+// An empty SHA yields an empty string so callers can append unconditionally.
+func FormatLastReviewedMarker(sha string) string {
+	if sha == "" {
+		return ""
+	}
+	return fmt.Sprintf(LastReviewedMarkerFmt, sha)
+}
+
 // BotMarker flags a review comment or note as authored by this bot.
 const BotMarker = "<!-- ocr-"
 
